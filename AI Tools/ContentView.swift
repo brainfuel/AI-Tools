@@ -278,10 +278,10 @@ struct ContentView: View {
                 }
             }
 
-            if !message.generatedImages.isEmpty {
-                ForEach(message.generatedImages) { image in
-                    AssistantImageView(image: image)
-                        .frame(maxWidth: 360, maxHeight: 260)
+            if !message.generatedMedia.isEmpty {
+                ForEach(message.generatedMedia) { media in
+                    AssistantMediaView(media: media)
+                        .frame(maxWidth: 420)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }

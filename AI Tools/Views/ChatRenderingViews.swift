@@ -1,4 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
+#if canImport(AVKit)
+import AVKit
+#endif
+#if canImport(PDFKit)
+import PDFKit
+#endif
 #if os(macOS)
 import AppKit
 #elseif os(iOS)
