@@ -33,6 +33,9 @@ struct ContentView: View {
 #if os(macOS)
         .navigationSplitViewColumnWidth(min: 220, ideal: 280)
 #endif
+        .task {
+            await viewModel.loadOnLaunchIfNeeded()
+        }
     }
 
     private var sidebar: some View {
@@ -94,36 +97,50 @@ struct ContentView: View {
     private var configurationSection: some View {
         GroupBox("Connection") {
             VStack(alignment: .leading, spacing: 8) {
+                Picker("Provider", selection: $viewModel.selectedProvider) {
+                    ForEach(AIProvider.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: viewModel.selectedProvider) { _, newValue in
+                    Task {
+                        await viewModel.selectProvider(newValue)
+                    }
+                }
+
                 HStack {
                     if isKeyHidden {
-                        SecureField("Gemini API Key", text: $viewModel.apiKey)
+                        SecureField(viewModel.providerAPIKeyPlaceholder, text: apiKeyBinding)
                     } else {
-                        TextField("Gemini API Key", text: $viewModel.apiKey)
+                        TextField(viewModel.providerAPIKeyPlaceholder, text: apiKeyBinding)
                     }
                     Button(isKeyHidden ? "Show" : "Hide") {
                         isKeyHidden.toggle()
                     }
                 }
 
-                Picker("Preset", selection: $viewModel.selectedPreset) {
-                    ForEach(ModelPreset.allCases) { preset in
-                        Text(preset.displayName).tag(preset)
+                if viewModel.selectedProvider == .gemini {
+                    Picker("Preset", selection: $viewModel.selectedPreset) {
+                        ForEach(ModelPreset.allCases) { preset in
+                            Text(preset.displayName).tag(preset)
+                        }
                     }
-                }
-                .pickerStyle(.menu)
-                .onChange(of: viewModel.selectedPreset) { _, newValue in
-                    viewModel.applyPreset(newValue)
+                    .pickerStyle(.menu)
+                    .onChange(of: viewModel.selectedPreset) { _, newValue in
+                        viewModel.applyPreset(newValue)
+                    }
                 }
 
                 HStack {
-                    TextField("Model ID", text: $viewModel.modelID)
+                    TextField("Model ID", text: modelIDBinding)
                     Button("Load Models") {
                         Task {
                             await viewModel.refreshModels()
                         }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(viewModel.isLoading || viewModel.apiKey.isEmpty)
+                    .disabled(viewModel.isLoading || viewModel.currentAPIKey.isEmpty || !viewModel.canLoadModels)
                 }
 
                 if !viewModel.availableModels.isEmpty {
@@ -237,7 +254,11 @@ struct ContentView: View {
                     sendMessage()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isLoading || (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingAttachments.isEmpty))
+                .disabled(
+                    viewModel.isLoading ||
+                    !viewModel.canSendRequests ||
+                    (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingAttachments.isEmpty)
+                )
             }
         }
         .fileImporter(
@@ -298,6 +319,23 @@ struct ContentView: View {
         Task {
             await viewModel.send(text: text, attachments: attachments)
         }
+    }
+
+    private var apiKeyBinding: Binding<String> {
+        Binding(
+            get: { viewModel.currentAPIKey },
+            set: { viewModel.updateCurrentAPIKey($0) }
+        )
+    }
+
+    private var modelIDBinding: Binding<String> {
+        Binding(
+            get: { viewModel.modelID },
+            set: {
+                viewModel.modelID = $0
+                viewModel.modelIDDidChange()
+            }
+        )
     }
 
     private func handleImportResult(_ result: Result<[URL], Error>) {

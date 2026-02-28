@@ -4,31 +4,109 @@ import Combine
 
 @MainActor
 final class PlaygroundViewModel: ObservableObject {
-    @AppStorage("gemini_api_key") var apiKey = ""
-    @AppStorage("gemini_model_id") var modelID = ModelPreset.geminiFlash.modelID
+    @AppStorage("ai_provider") private var providerStore = AIProvider.gemini.rawValue
+    @AppStorage("gemini_api_key") private var geminiAPIKey = ""
+    @AppStorage("openai_api_key") private var openAIAPIKey = ""
+    @AppStorage("anthropic_api_key") private var anthropicAPIKey = ""
+
+    @AppStorage("gemini_model_id") private var geminiModelID = ModelPreset.geminiFlash.modelID
+    @AppStorage("openai_model_id") private var openAIModelID = "gpt-4.1-mini"
+    @AppStorage("anthropic_model_id") private var anthropicModelID = "claude-3-5-sonnet-latest"
+
     @AppStorage("gemini_system_instruction") var systemInstruction = ""
     @AppStorage("gemini_chat_history_v1") private var chatHistoryStore = ""
 
     @Published var messages: [ChatMessage] = []
     @Published var errorMessage: String?
     @Published var isLoading = false
+    @Published var selectedProvider: AIProvider = .gemini
+    @Published var modelID: String = ModelPreset.geminiFlash.modelID
     @Published var selectedPreset: ModelPreset = .geminiFlash
     @Published var availableModels: [String] = []
     @Published var savedConversations: [SavedConversation] = []
     @Published var selectedConversationID: UUID?
 
-    private let serviceFactory: (String) -> GeminiServicing
+    private let serviceFactory: (AIProvider, String) -> GeminiServicing
+    private var didAutoLoadModels = false
 
-    init(serviceFactory: @escaping (String) -> GeminiServicing = { GeminiClient(apiKey: $0) }) {
+    init(serviceFactory: @escaping (AIProvider, String) -> GeminiServicing = { provider, key in
+        switch provider {
+        case .gemini:
+            return GeminiClient(apiKey: key)
+        case .chatGPT:
+            return OpenAIClient(apiKey: key)
+        case .anthropic:
+            return AnthropicClient(apiKey: key)
+        }
+    }) {
         self.serviceFactory = serviceFactory
+        let provider = AIProvider(rawValue: providerStore) ?? .gemini
+        selectedProvider = provider
+        modelID = providerModelID(provider)
         selectedPreset = ModelPreset(rawValue: modelID) ?? .custom
         loadSavedConversations()
+    }
+
+    var providerAPIKeyPlaceholder: String {
+        selectedProvider.apiKeyPlaceholder
+    }
+
+    var currentAPIKey: String {
+        switch selectedProvider {
+        case .gemini:
+            return geminiAPIKey
+        case .chatGPT:
+            return openAIAPIKey
+        case .anthropic:
+            return anthropicAPIKey
+        }
+    }
+
+    var canSendRequests: Bool {
+        selectedProvider.isImplemented
+    }
+
+    var canLoadModels: Bool {
+        selectedProvider == .gemini || selectedProvider == .chatGPT || selectedProvider == .anthropic
+    }
+
+    func updateCurrentAPIKey(_ value: String) {
+        switch selectedProvider {
+        case .gemini:
+            geminiAPIKey = value
+        case .chatGPT:
+            openAIAPIKey = value
+        case .anthropic:
+            anthropicAPIKey = value
+        }
+    }
+
+    func loadOnLaunchIfNeeded() async {
+        guard !didAutoLoadModels else { return }
+        didAutoLoadModels = true
+        await autoLoadModelsIfPossible()
+    }
+
+    func selectProvider(_ provider: AIProvider) async {
+        selectedProvider = provider
+        providerStore = provider.rawValue
+        modelID = providerModelID(provider)
+        selectedPreset = ModelPreset(rawValue: modelID) ?? .custom
+        availableModels = []
+        errorMessage = nil
+        await autoLoadModelsIfPossible()
     }
 
     func applyPreset(_ preset: ModelPreset) {
         if preset != .custom {
             modelID = preset.modelID
+            persistCurrentModelID()
         }
+    }
+
+    func modelIDDidChange() {
+        persistCurrentModelID()
+        selectedPreset = ModelPreset(rawValue: modelID) ?? .custom
     }
 
     func clearMessages() {
