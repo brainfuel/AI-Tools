@@ -302,7 +302,8 @@ private struct AssistantMediaSaveButton: View {
         do {
             let data = try await resolvedData()
             exportDocument = ExportedMediaDocument(data: data)
-            exportType = UTType(mimeType: media.mimeType) ?? .data
+            let requestedType = UTType(mimeType: media.mimeType) ?? .data
+            exportType = ExportedMediaDocument.writableContentTypes.contains(requestedType) ? requestedType : .data
             exportFilename = media.suggestedFilename
             isExporterPresented = true
         } catch {
@@ -327,6 +328,23 @@ private struct AssistantMediaSaveButton: View {
 
 private struct ExportedMediaDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.data] }
+    static var writableContentTypes: [UTType] {
+        [
+            .data,
+            .plainText,
+            .utf8PlainText,
+            .commaSeparatedText,
+            .json,
+            .pdf,
+            .jpeg,
+            .png,
+            .gif,
+            .mpeg4Movie,
+            .quickTimeMovie,
+            .mpeg4Audio,
+            .mp3
+        ]
+    }
     let data: Data
 
     init(data: Data) {
