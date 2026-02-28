@@ -122,7 +122,7 @@ final class PlaygroundViewModel: ObservableObject {
                 role: .assistant,
                 text: reply.text,
                 attachments: [],
-                generatedImages: reply.generatedImages
+                generatedMedia: reply.generatedMedia
             ))
             upsertCurrentConversation()
         } catch {

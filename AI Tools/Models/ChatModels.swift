@@ -36,25 +36,58 @@ struct GeneratedImage: Identifiable {
     }
 }
 
+enum GeneratedMediaKind: String {
+    case image
+    case audio
+    case video
+    case pdf
+    case text
+    case json
+    case csv
+    case file
+}
+
+struct GeneratedMedia: Identifiable {
+    let id: UUID
+    let kind: GeneratedMediaKind
+    let mimeType: String
+    let base64Data: String?
+    let remoteURL: URL?
+
+    init(
+        id: UUID = UUID(),
+        kind: GeneratedMediaKind,
+        mimeType: String,
+        base64Data: String? = nil,
+        remoteURL: URL? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.mimeType = mimeType
+        self.base64Data = base64Data
+        self.remoteURL = remoteURL
+    }
+}
+
 struct ChatMessage: Identifiable {
     let id: UUID
     let role: MessageRole
     let text: String
     let attachments: [AttachmentSummary]
-    let generatedImages: [GeneratedImage]
+    let generatedMedia: [GeneratedMedia]
 
     init(
         id: UUID = UUID(),
         role: MessageRole,
         text: String,
         attachments: [AttachmentSummary],
-        generatedImages: [GeneratedImage] = []
+        generatedMedia: [GeneratedMedia] = []
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.attachments = attachments
-        self.generatedImages = generatedImages
+        self.generatedMedia = generatedMedia
     }
 }
 
@@ -72,7 +105,7 @@ extension ChatMessage: Codable {
         role = try container.decode(MessageRole.self, forKey: .role)
         text = try container.decode(String.self, forKey: .text)
         attachments = try container.decode([AttachmentSummary].self, forKey: .attachments)
-        generatedImages = []
+        generatedMedia = []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -132,5 +165,5 @@ struct SavedConversation: Identifiable, Codable {
 
 struct ModelReply {
     let text: String
-    let generatedImages: [GeneratedImage]
+    let generatedMedia: [GeneratedMedia]
 }
