@@ -6,7 +6,7 @@ import Combine
 final class PlaygroundViewModel: ObservableObject {
     @AppStorage("ai_provider") private var providerStore = AIProvider.gemini.rawValue
 
-    @AppStorage("gemini_model_id") private var geminiModelID = ModelPreset.geminiFlash.modelID
+    @AppStorage("gemini_model_id") private var geminiModelID = "gemini-2.5-flash"
     @AppStorage("openai_model_id") private var openAIModelID = "gpt-4.1-mini"
     @AppStorage("anthropic_model_id") private var anthropicModelID = "claude-3-5-sonnet-latest"
 
@@ -64,7 +64,6 @@ final class PlaygroundViewModel: ObservableObject {
         let provider = AIProvider(rawValue: providerStore) ?? .gemini
         selectedProvider = provider
         modelID = providerModelID(provider)
-        selectedPreset = ModelPreset(rawValue: modelID) ?? .custom
         Task { [weak self] in
             await self?.loadSavedConversations()
         }
@@ -137,7 +136,6 @@ final class PlaygroundViewModel: ObservableObject {
         }
 
         modelID = conversation.modelID
-        selectedPreset = ModelPreset(rawValue: modelID) ?? .custom
         persistCurrentModelID()
         messages = conversation.messages
         errorMessage = nil
@@ -161,7 +159,7 @@ final class PlaygroundViewModel: ObservableObject {
 
     func refreshModels() async {
         guard canLoadModels else {
-            errorMessage = "Model loading is currently implemented for Gemini."
+            errorMessage = "Model loading is not available for this provider."
             return
         }
 
@@ -174,7 +172,6 @@ final class PlaygroundViewModel: ObservableObject {
             availableModels = try await serviceFactory(selectedProvider, currentAPIKey).listGenerateContentModels()
             if !availableModels.contains(modelID), let first = availableModels.first {
                 modelID = first
-                selectedPreset = .custom
                 persistCurrentModelID()
             }
         } catch {

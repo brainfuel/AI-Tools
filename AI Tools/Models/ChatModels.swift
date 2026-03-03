@@ -149,39 +149,6 @@ extension ChatMessage: Codable {
     }
 }
 
-enum ModelPreset: String, CaseIterable, Identifiable {
-    case gemini31ProPreview = "gemini-3.1-pro-preview"
-    case gemini3FlashPreview = "gemini-3-flash-preview"
-    case gemini3ProPreview = "gemini-3-pro-preview"
-    case geminiFlash = "gemini-2.5-flash"
-    case geminiPro = "gemini-2.5-pro"
-    case geminiFlashLite = "gemini-2.5-flash-lite"
-    case nanaanoBanana = "nanaano-banana"
-    case custom = "custom"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .gemini31ProPreview: return "Gemini 3.1 Pro Preview"
-        case .gemini3FlashPreview: return "Gemini 3 Flash Preview"
-        case .gemini3ProPreview: return "Gemini 3 Pro Preview (Deprecated)"
-        case .geminiFlash: return "Gemini 2.5 Flash"
-        case .geminiPro: return "Gemini 2.5 Pro"
-        case .geminiFlashLite: return "Gemini 2.5 Flash Lite"
-        case .nanaanoBanana: return "Nanaano Banana"
-        case .custom: return "Custom"
-        }
-    }
-
-    var modelID: String {
-        switch self {
-        case .custom: return ""
-        default: return rawValue
-        }
-    }
-}
-
 struct SavedConversation: Identifiable, Codable {
     var id: UUID
     var title: String
