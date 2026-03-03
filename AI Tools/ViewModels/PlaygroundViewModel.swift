@@ -5,9 +5,6 @@ import Combine
 @MainActor
 final class PlaygroundViewModel: ObservableObject {
     @AppStorage("ai_provider") private var providerStore = AIProvider.gemini.rawValue
-    @AppStorage("gemini_api_key") private var geminiAPIKey = ""
-    @AppStorage("openai_api_key") private var openAIAPIKey = ""
-    @AppStorage("anthropic_api_key") private var anthropicAPIKey = ""
 
     @AppStorage("gemini_model_id") private var geminiModelID = ModelPreset.geminiFlash.modelID
     @AppStorage("openai_model_id") private var openAIModelID = "gpt-4.1-mini"
@@ -27,19 +24,33 @@ final class PlaygroundViewModel: ObservableObject {
     @Published var selectedConversationID: UUID?
 
     private let serviceFactory: (AIProvider, String) -> GeminiServicing
+    private let keychainStore: KeychainStore
     private var didAutoLoadModels = false
+    private var apiKeysByProvider: [AIProvider: String] = [:]
+    private var pendingAPIKeyPersistTasks: [AIProvider: Task<Void, Never>] = [:]
 
-    init(serviceFactory: @escaping (AIProvider, String) -> GeminiServicing = { provider, key in
-        switch provider {
-        case .gemini:
-            return GeminiClient(apiKey: key)
-        case .chatGPT:
-            return OpenAIClient(apiKey: key)
-        case .anthropic:
-            return AnthropicClient(apiKey: key)
-        }
-    }) {
+    private static let legacyAPIKeyDefaultsKeys: [AIProvider: String] = [
+        .gemini: "gemini_api_key",
+        .chatGPT: "openai_api_key",
+        .anthropic: "anthropic_api_key"
+    ]
+
+    init(
+        serviceFactory: @escaping (AIProvider, String) -> GeminiServicing = { provider, key in
+            switch provider {
+            case .gemini:
+                return GeminiClient(apiKey: key)
+            case .chatGPT:
+                return OpenAIClient(apiKey: key)
+            case .anthropic:
+                return AnthropicClient(apiKey: key)
+            }
+        },
+        keychainStore: KeychainStore = KeychainStore()
+    ) {
         self.serviceFactory = serviceFactory
+        self.keychainStore = keychainStore
+        loadAPIKeysFromSecureStorage()
         let provider = AIProvider(rawValue: providerStore) ?? .gemini
         selectedProvider = provider
         modelID = providerModelID(provider)
@@ -52,14 +63,7 @@ final class PlaygroundViewModel: ObservableObject {
     }
 
     var currentAPIKey: String {
-        switch selectedProvider {
-        case .gemini:
-            return geminiAPIKey
-        case .chatGPT:
-            return openAIAPIKey
-        case .anthropic:
-            return anthropicAPIKey
-        }
+        apiKeysByProvider[selectedProvider] ?? ""
     }
 
     var canSendRequests: Bool {
@@ -71,14 +75,9 @@ final class PlaygroundViewModel: ObservableObject {
     }
 
     func updateCurrentAPIKey(_ value: String) {
-        switch selectedProvider {
-        case .gemini:
-            geminiAPIKey = value
-        case .chatGPT:
-            openAIAPIKey = value
-        case .anthropic:
-            anthropicAPIKey = value
-        }
+        let provider = selectedProvider
+        apiKeysByProvider[provider] = value
+        queueAPIKeyPersist(value, for: provider)
     }
 
     func loadOnLaunchIfNeeded() async {
@@ -223,6 +222,72 @@ final class PlaygroundViewModel: ObservableObject {
         guard canLoadModels else { return }
         guard !currentAPIKey.isEmpty else { return }
         await refreshModels()
+    }
+
+    private func loadAPIKeysFromSecureStorage() {
+        let defaults = UserDefaults.standard
+
+        for provider in AIProvider.allCases {
+            let account = keychainAccount(for: provider)
+
+            if let secureValue = try? keychainStore.string(for: account),
+               !secureValue.isEmpty {
+                apiKeysByProvider[provider] = secureValue
+                cleanupLegacyAPIKey(for: provider, defaults: defaults)
+                continue
+            }
+
+            let legacyValue = legacyAPIKeyValue(for: provider, defaults: defaults)
+            if !legacyValue.isEmpty {
+                apiKeysByProvider[provider] = legacyValue
+                do {
+                    try keychainStore.setString(legacyValue, for: account)
+                    cleanupLegacyAPIKey(for: provider, defaults: defaults)
+                } catch {
+                    errorMessage = "Failed to store \(provider.displayName) API key in Keychain: \(error.localizedDescription)"
+                }
+            } else {
+                apiKeysByProvider[provider] = ""
+                cleanupLegacyAPIKey(for: provider, defaults: defaults)
+            }
+        }
+    }
+
+    private func queueAPIKeyPersist(_ value: String, for provider: AIProvider) {
+        pendingAPIKeyPersistTasks[provider]?.cancel()
+        pendingAPIKeyPersistTasks[provider] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.persistAPIKey(value, for: provider)
+            self.pendingAPIKeyPersistTasks[provider] = nil
+        }
+    }
+
+    private func persistAPIKey(_ value: String, for provider: AIProvider) {
+        do {
+            if value.isEmpty {
+                try keychainStore.removeValue(for: keychainAccount(for: provider))
+            } else {
+                try keychainStore.setString(value, for: keychainAccount(for: provider))
+            }
+            cleanupLegacyAPIKey(for: provider, defaults: .standard)
+        } catch {
+            errorMessage = "Failed to persist \(provider.displayName) API key to Keychain: \(error.localizedDescription)"
+        }
+    }
+
+    private func legacyAPIKeyValue(for provider: AIProvider, defaults: UserDefaults) -> String {
+        guard let key = Self.legacyAPIKeyDefaultsKeys[provider] else { return "" }
+        return defaults.string(forKey: key) ?? ""
+    }
+
+    private func cleanupLegacyAPIKey(for provider: AIProvider, defaults: UserDefaults) {
+        guard let key = Self.legacyAPIKeyDefaultsKeys[provider] else { return }
+        defaults.removeObject(forKey: key)
+    }
+
+    private func keychainAccount(for provider: AIProvider) -> String {
+        "api-key.\(provider.rawValue)"
     }
 
     private func persistCurrentModelID() {

@@ -68,7 +68,8 @@ xcodebuild -project "AI Tools.xcodeproj" -scheme "AI Tools" -configuration Debug
 
 ## Data Storage
 
-- API keys, selected models, system instruction, and saved conversations are stored locally using `@AppStorage` (UserDefaults).
+- API keys are stored securely in the system Keychain.
+- Selected models, system instruction, and saved conversations are stored locally using `@AppStorage` (UserDefaults).
 - No server-side app backend is included in this project.
 
 ## Project Structure
@@ -85,7 +86,6 @@ xcodebuild -project "AI Tools.xcodeproj" -scheme "AI Tools" -configuration Debug
 ## Known Limitations
 
 - OpenAI and Anthropic attachment upload is not implemented yet.
-- API keys are not stored in Keychain.
 - There are no automated tests yet.
 
 ## License
