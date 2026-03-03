@@ -24,11 +24,11 @@ final class PlaygroundViewModel: ObservableObject {
 
     private let serviceFactory: (AIProvider, String) -> GeminiServicing
     private let keychainStore: KeychainStore
-    private let conversationStoreURL: URL?
-    private let mediaStoreDirectoryURL: URL?
+    private let conversationStore: ConversationStore?
     private var didAutoLoadModels = false
     private var apiKeysByProvider: [AIProvider: String] = [:]
     private var pendingAPIKeyPersistTasks: [AIProvider: Task<Void, Never>] = [:]
+    private var pendingConversationSaveTask: Task<Void, Never>?
 
     private static let legacyAPIKeyDefaultsKeys: [AIProvider: String] = [
         .gemini: "gemini_api_key",
@@ -51,15 +51,24 @@ final class PlaygroundViewModel: ObservableObject {
     ) {
         self.serviceFactory = serviceFactory
         self.keychainStore = keychainStore
-        self.conversationStoreURL = Self.makeConversationStoreURL()
-        self.mediaStoreDirectoryURL = Self.makeMediaStoreDirectoryURL()
+        if let conversationStoreURL = Self.makeConversationStoreURL(),
+           let mediaStoreDirectoryURL = Self.makeMediaStoreDirectoryURL() {
+            self.conversationStore = ConversationStore(
+                storeURL: conversationStoreURL,
+                mediaStoreDirectoryURL: mediaStoreDirectoryURL
+            )
+        } else {
+            self.conversationStore = nil
+        }
         UserDefaults.standard.removeObject(forKey: "gemini_chat_history_v1")
         loadAPIKeysFromSecureStorage()
         let provider = AIProvider(rawValue: providerStore) ?? .gemini
         selectedProvider = provider
         modelID = providerModelID(provider)
         selectedPreset = ModelPreset(rawValue: modelID) ?? .custom
-        loadSavedConversations()
+        Task { [weak self] in
+            await self?.loadSavedConversations()
+        }
     }
 
     var providerAPIKeyPlaceholder: String {
@@ -210,7 +219,12 @@ final class PlaygroundViewModel: ObservableObject {
                 messages: messages,
                 latestUserAttachments: attachments
             )
-            let persistedMedia = persistGeneratedMediaInPlace(reply.generatedMedia).media
+            let persistedMedia: [GeneratedMedia]
+            if let conversationStore {
+                persistedMedia = await conversationStore.normalizeMedia(reply.generatedMedia)
+            } else {
+                persistedMedia = reply.generatedMedia
+            }
             messages.append(ChatMessage(
                 role: .assistant,
                 text: reply.text,
@@ -391,119 +405,44 @@ final class PlaygroundViewModel: ObservableObject {
         return String(cleaned.prefix(48))
     }
 
-    private func loadSavedConversations() {
-        if let conversationStoreURL,
-           let data = try? Data(contentsOf: conversationStoreURL),
-           let decoded = try? JSONDecoder().decode([SavedConversation].self, from: data) {
-            let normalized = normalizeConversations(decoded)
-            savedConversations = normalized.conversations.sorted { $0.updatedAt > $1.updatedAt }
-            if normalized.didChange {
-                persistSavedConversations()
-            }
+    private func loadSavedConversations() async {
+        guard let conversationStore else {
+            savedConversations = []
             return
         }
-        savedConversations = []
+        do {
+            let loaded = try await conversationStore.loadConversations()
+            savedConversations = loaded.sorted { $0.updatedAt > $1.updatedAt }
+        } catch {
+            savedConversations = []
+            errorMessage = "Failed to load conversations: \(error.localizedDescription)"
+        }
     }
 
     private func persistSavedConversations() {
-        guard let conversationStoreURL else {
+        guard let conversationStore else {
             errorMessage = "Unable to resolve conversation storage path."
             return
         }
-        let normalized = normalizeConversations(savedConversations)
-        if normalized.didChange {
-            savedConversations = normalized.conversations
-        }
-        guard let data = try? JSONEncoder().encode(savedConversations) else { return }
-        do {
-            try data.write(to: conversationStoreURL, options: .atomic)
-        } catch {
-            errorMessage = "Failed to persist conversations: \(error.localizedDescription)"
-        }
-    }
-
-    private func normalizeConversations(_ conversations: [SavedConversation]) -> (conversations: [SavedConversation], didChange: Bool) {
-        var didChange = false
-        let normalized = conversations.map { conversation in
-            var mutable = conversation
-            let normalizedMessages = normalizeMessages(conversation.messages)
-            mutable.messages = normalizedMessages.messages
-            didChange = didChange || normalizedMessages.didChange
-            return mutable
-        }
-        return (normalized, didChange)
-    }
-
-    private func normalizeMessages(_ messages: [ChatMessage]) -> (messages: [ChatMessage], didChange: Bool) {
-        var didChange = false
-        let normalized = messages.map { message in
-            let normalizedMedia = persistGeneratedMediaInPlace(message.generatedMedia)
-            didChange = didChange || normalizedMedia.didChange
-            if normalizedMedia.didChange {
-                return ChatMessage(
-                    id: message.id,
-                    role: message.role,
-                    text: message.text,
-                    attachments: message.attachments,
-                    generatedMedia: normalizedMedia.media
-                )
-            }
-            return message
-        }
-        return (normalized, didChange)
-    }
-
-    private func persistGeneratedMediaInPlace(_ mediaItems: [GeneratedMedia]) -> (media: [GeneratedMedia], didChange: Bool) {
-        guard !mediaItems.isEmpty else { return (mediaItems, false) }
-        guard let mediaStoreDirectoryURL else { return (mediaItems, false) }
-
-        var didChange = false
-        var normalized: [GeneratedMedia] = []
-        normalized.reserveCapacity(mediaItems.count)
-
-        for media in mediaItems {
-            guard let base64 = media.base64Data, !base64.isEmpty else {
-                normalized.append(media)
-                continue
-            }
-
-            guard let data = Data(base64Encoded: base64) else {
-                normalized.append(media)
-                continue
-            }
-
-            let fileURL = mediaStoreDirectoryURL
-                .appendingPathComponent(media.id.uuidString)
-                .appendingPathExtension(media.mimeType.fileExtensionHint)
+        let snapshot = savedConversations
+        pendingConversationSaveTask?.cancel()
+        pendingConversationSaveTask = Task { [weak self, snapshot] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let self, !Task.isCancelled else { return }
 
             do {
-                if !FileManager.default.fileExists(atPath: fileURL.path) {
-                    try data.write(to: fileURL, options: .atomic)
+                let normalized = try await conversationStore.saveConversations(snapshot)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self.savedConversations = normalized.sorted { $0.updatedAt > $1.updatedAt }
+                    self.pendingConversationSaveTask = nil
                 }
-                normalized.append(
-                    GeneratedMedia(
-                        id: media.id,
-                        kind: media.kind,
-                        mimeType: media.mimeType,
-                        base64Data: nil,
-                        remoteURL: fileURL
-                    )
-                )
-                didChange = true
             } catch {
-                normalized.append(media)
+                await MainActor.run {
+                    self.errorMessage = "Failed to persist conversations: \(error.localizedDescription)"
+                    self.pendingConversationSaveTask = nil
+                }
             }
         }
-
-        return (normalized, didChange)
-    }
-}
-
-private extension String {
-    var fileExtensionHint: String {
-        let parts = split(separator: "/")
-        guard let last = parts.last else { return "bin" }
-        let cleaned = String(last).replacingOccurrences(of: "+xml", with: "")
-        return cleaned.isEmpty ? "bin" : cleaned
     }
 }
