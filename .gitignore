@@ -128,3 +128,6 @@ yarn-error.log
 
 # Local AI tool worktrees
 .claude/worktrees/
+
+# Release artifacts
+dist/
