@@ -138,8 +138,12 @@ final class ConversationStore {
                     id: message.id,
                     role: message.role,
                     text: message.text,
+                    createdAt: message.createdAt,
                     attachments: message.attachments,
-                    generatedMedia: normalizedMedia.media
+                    generatedMedia: normalizedMedia.media,
+                    inputTokens: message.inputTokens,
+                    outputTokens: message.outputTokens,
+                    modelID: message.modelID
                 )
             }
             return message

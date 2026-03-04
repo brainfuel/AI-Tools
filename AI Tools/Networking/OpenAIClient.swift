@@ -242,9 +242,26 @@ private struct OpenAIModel: Decodable {
     let id: String
 }
 
-private struct OpenAIChatRequest: Encodable {
+private struct OpenAIChatStreamRequest: Encodable {
     let model: String
     let messages: [OpenAIChatMessage]
+    let stream: Bool = true
+    let streamOptions: OpenAIStreamOptions = OpenAIStreamOptions()
+
+    enum CodingKeys: String, CodingKey {
+        case model
+        case messages
+        case stream
+        case streamOptions = "stream_options"
+    }
+}
+
+private struct OpenAIStreamOptions: Encodable {
+    let includeUsage: Bool = true
+
+    enum CodingKeys: String, CodingKey {
+        case includeUsage = "include_usage"
+    }
 }
 
 private struct OpenAIImageRequest: Encodable {
@@ -271,12 +288,27 @@ private struct OpenAIChatMessage: Codable {
     let content: String
 }
 
-private struct OpenAIChatResponse: Decodable {
-    let choices: [OpenAIChatChoice]
+private struct OpenAIStreamChunk: Decodable {
+    let choices: [OpenAIStreamChoice]
+    let usage: OpenAIUsage?
 }
 
-private struct OpenAIChatChoice: Decodable {
-    let message: OpenAIChatMessage
+private struct OpenAIStreamChoice: Decodable {
+    let delta: OpenAIStreamDelta
+}
+
+private struct OpenAIStreamDelta: Decodable {
+    let content: String?
+}
+
+private struct OpenAIUsage: Decodable {
+    let promptTokens: Int
+    let completionTokens: Int
+
+    enum CodingKeys: String, CodingKey {
+        case promptTokens = "prompt_tokens"
+        case completionTokens = "completion_tokens"
+    }
 }
 
 private struct OpenAIErrorEnvelope: Decodable {

@@ -103,21 +103,33 @@ struct ChatMessage: Identifiable {
     let id: UUID
     let role: MessageRole
     let text: String
+    let createdAt: Date?
     let attachments: [AttachmentSummary]
     let generatedMedia: [GeneratedMedia]
+    let inputTokens: Int
+    let outputTokens: Int
+    let modelID: String?
 
     init(
         id: UUID = UUID(),
         role: MessageRole,
         text: String,
+        createdAt: Date? = Date(),
         attachments: [AttachmentSummary],
-        generatedMedia: [GeneratedMedia] = []
+        generatedMedia: [GeneratedMedia] = [],
+        inputTokens: Int = 0,
+        outputTokens: Int = 0,
+        modelID: String? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
+        self.createdAt = createdAt
         self.attachments = attachments
         self.generatedMedia = generatedMedia
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.modelID = modelID
     }
 }
 
@@ -126,8 +138,12 @@ extension ChatMessage: Codable {
         case id
         case role
         case text
+        case createdAt
         case attachments
         case generatedMedia
+        case inputTokens
+        case outputTokens
+        case modelID
     }
 
     init(from decoder: Decoder) throws {
@@ -135,8 +151,12 @@ extension ChatMessage: Codable {
         id = try container.decode(UUID.self, forKey: .id)
         role = try container.decode(MessageRole.self, forKey: .role)
         text = try container.decode(String.self, forKey: .text)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         attachments = try container.decode([AttachmentSummary].self, forKey: .attachments)
         generatedMedia = try container.decodeIfPresent([GeneratedMedia].self, forKey: .generatedMedia) ?? []
+        inputTokens = try container.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
+        outputTokens = try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -144,8 +164,12 @@ extension ChatMessage: Codable {
         try container.encode(id, forKey: .id)
         try container.encode(role, forKey: .role)
         try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(createdAt, forKey: .createdAt)
         try container.encode(attachments, forKey: .attachments)
         try container.encode(generatedMedia, forKey: .generatedMedia)
+        try container.encode(inputTokens, forKey: .inputTokens)
+        try container.encode(outputTokens, forKey: .outputTokens)
+        try container.encodeIfPresent(modelID, forKey: .modelID)
     }
 }
 
@@ -211,4 +235,67 @@ struct SavedConversation: Identifiable, Codable {
 struct ModelReply {
     let text: String
     let generatedMedia: [GeneratedMedia]
+    let inputTokens: Int
+    let outputTokens: Int
+
+    init(
+        text: String,
+        generatedMedia: [GeneratedMedia],
+        inputTokens: Int = 0,
+        outputTokens: Int = 0
+    ) {
+        self.text = text
+        self.generatedMedia = generatedMedia
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+    }
+}
+
+// MARK: - Token cost calculator
+
+struct TokenCost {
+    let inputPerMillion: Double
+    let outputPerMillion: Double
+
+    func cost(inputTokens: Int, outputTokens: Int) -> Double {
+        Double(inputTokens) / 1_000_000 * inputPerMillion +
+        Double(outputTokens) / 1_000_000 * outputPerMillion
+    }
+}
+
+enum TokenCostCalculator {
+    static func cost(for modelID: String, inputTokens: Int, outputTokens: Int) -> Double? {
+        guard let pricing = pricing(for: modelID) else { return nil }
+        return pricing.cost(inputTokens: inputTokens, outputTokens: outputTokens)
+    }
+
+    // Prices in USD per 1 million tokens (as of early 2026)
+    private static func pricing(for modelID: String) -> TokenCost? {
+        // Gemini
+        if modelID.hasPrefix("gemini-2.5-pro")    { return TokenCost(inputPerMillion: 1.25,  outputPerMillion: 10.00) }
+        if modelID.hasPrefix("gemini-2.5-flash")   { return TokenCost(inputPerMillion: 0.075, outputPerMillion: 0.30)  }
+        if modelID.hasPrefix("gemini-2.0-flash")   { return TokenCost(inputPerMillion: 0.10,  outputPerMillion: 0.40)  }
+        if modelID.hasPrefix("gemini-1.5-pro")     { return TokenCost(inputPerMillion: 1.25,  outputPerMillion: 5.00)  }
+        if modelID.hasPrefix("gemini-1.5-flash")   { return TokenCost(inputPerMillion: 0.075, outputPerMillion: 0.30)  }
+
+        // OpenAI
+        if modelID == "gpt-4.1"                    { return TokenCost(inputPerMillion: 2.00,  outputPerMillion: 8.00)  }
+        if modelID.hasPrefix("gpt-4.1-mini")       { return TokenCost(inputPerMillion: 0.40,  outputPerMillion: 1.60)  }
+        if modelID.hasPrefix("gpt-4o-mini")        { return TokenCost(inputPerMillion: 0.15,  outputPerMillion: 0.60)  }
+        if modelID.hasPrefix("gpt-4o")             { return TokenCost(inputPerMillion: 2.50,  outputPerMillion: 10.00) }
+        if modelID.hasPrefix("o1-mini")            { return TokenCost(inputPerMillion: 1.10,  outputPerMillion: 4.40)  }
+        if modelID.hasPrefix("o1")                 { return TokenCost(inputPerMillion: 15.00, outputPerMillion: 60.00) }
+        if modelID.hasPrefix("o3-mini")            { return TokenCost(inputPerMillion: 1.10,  outputPerMillion: 4.40)  }
+        if modelID.hasPrefix("o3")                 { return TokenCost(inputPerMillion: 10.00, outputPerMillion: 40.00) }
+        if modelID.hasPrefix("o4-mini")            { return TokenCost(inputPerMillion: 1.10,  outputPerMillion: 4.40)  }
+
+        // Anthropic
+        if modelID.hasPrefix("claude-3-opus")      { return TokenCost(inputPerMillion: 15.00, outputPerMillion: 75.00) }
+        if modelID.hasPrefix("claude-3-7-sonnet")  { return TokenCost(inputPerMillion: 3.00,  outputPerMillion: 15.00) }
+        if modelID.hasPrefix("claude-3-5-sonnet")  { return TokenCost(inputPerMillion: 3.00,  outputPerMillion: 15.00) }
+        if modelID.hasPrefix("claude-3-5-haiku")   { return TokenCost(inputPerMillion: 0.80,  outputPerMillion: 4.00)  }
+        if modelID.hasPrefix("claude-3-haiku")     { return TokenCost(inputPerMillion: 0.25,  outputPerMillion: 1.25)  }
+
+        return nil
+    }
 }

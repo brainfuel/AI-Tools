@@ -28,6 +28,7 @@ AI Tools lets you:
 - Attachment import with image preprocessing (center-crop to square, resize up to 1280x1280, JPEG encode)
 - 18 MB attachment size limit per file
 - Media output viewer with Save export flow
+- Token usage + estimated cost summaries for session, last 24h, last 7d, and last 30d
 
 ## Provider Support
 
@@ -74,6 +75,7 @@ xcodebuild -project "AI Tools.xcodeproj" -scheme "AI Tools" -configuration Debug
 6. Add system instructions if needed.
 7. Type a prompt, optionally attach files, then click **Send**.
 8. Use the chat history sidebar to reopen prior conversations.
+9. See rolling usage summaries (24h/7d/30d) near the composer footer.
 
 ## Data Storage
 
@@ -89,6 +91,7 @@ This project includes unit tests for `PlaygroundViewModel`, including:
 - cached models shown immediately when switching conversations/providers
 - startup model prefetch behavior
 - one-time launch prefetch guard
+- rolling token/cost aggregation (24h/7d/30d), including legacy timestamp fallback and unsaved current-chat data
 
 Run tests:
 

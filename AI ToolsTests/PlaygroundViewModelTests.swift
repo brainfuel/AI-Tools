@@ -115,16 +115,175 @@ final class PlaygroundViewModelTests: XCTestCase {
         calls = await recorder.snapshot()
         XCTAssertEqual(calls[.gemini], 1)
         XCTAssertEqual(calls[.chatGPT], 1)
+    }
 
-        let geminiCached = decode(defaults.string(forKey: "gemini_models_cache_v1") ?? "")
-        let openAICached = decode(defaults.string(forKey: "openai_models_cache_v1") ?? "")
-        XCTAssertEqual(geminiCached, ["gemini-2.5-flash", "gemini-2.5-pro"])
-        XCTAssertEqual(openAICached, ["gpt-4.1-mini", "o3-mini"])
+    func testSelectingProviderWithNoCacheDoesNotInjectStaleModelIntoAvailableModels() async {
+        defaults.set("nano-banana-pro-preview", forKey: "anthropic_model_id")
+        defaults.set("", forKey: "anthropic_models_cache_v1")
+
+        let recorder = ModelListRecorder()
+        let viewModel = makeViewModel(modelMap: [:], recorder: recorder)
+        await viewModel.selectProvider(.anthropic)
+
+        XCTAssertEqual(viewModel.modelID, "nano-banana-pro-preview")
+        XCTAssertTrue(viewModel.availableModels.isEmpty)
+    }
+
+    func testSelectingConversationDoesNotPersistConversationModelAsProviderDefault() async {
+        defaults.set("claude-3-5-sonnet-latest", forKey: "anthropic_model_id")
+
+        let recorder = ModelListRecorder()
+        let viewModel = makeViewModel(modelMap: [:], recorder: recorder)
+
+        let conversation = SavedConversation(
+            id: UUID(),
+            provider: .anthropic,
+            title: "legacy",
+            updatedAt: Date(),
+            modelID: "nano-banana-pro-preview",
+            messages: [ChatMessage(role: .user, text: "hello", attachments: [])]
+        )
+
+        viewModel.savedConversations = [conversation]
+        viewModel.selectConversation(conversation.id)
+
+        await viewModel.selectProvider(.gemini)
+        await viewModel.selectProvider(.anthropic)
+
+        XCTAssertEqual(viewModel.modelID, "claude-3-5-sonnet-latest")
+    }
+
+    func testUsageTimeWindowsAggregateRollingTokenAndCostTotals() async {
+        let now = Date(timeIntervalSince1970: 1_762_000_000)
+        let recorder = ModelListRecorder()
+        let viewModel = makeViewModel(modelMap: [:], recorder: recorder, nowProvider: { now })
+
+        viewModel.savedConversations = [
+            SavedConversation(
+                id: UUID(),
+                provider: .chatGPT,
+                title: "usage",
+                updatedAt: now,
+                modelID: "gpt-4.1-mini",
+                messages: [
+                    ChatMessage(
+                        role: .assistant,
+                        text: "recent",
+                        createdAt: now.addingTimeInterval(-2 * 60 * 60),
+                        attachments: [],
+                        inputTokens: 1_000,
+                        outputTokens: 2_000,
+                        modelID: "gpt-4.1-mini"
+                    ),
+                    ChatMessage(
+                        role: .assistant,
+                        text: "week",
+                        createdAt: now.addingTimeInterval(-2 * 24 * 60 * 60),
+                        attachments: [],
+                        inputTokens: 2_000,
+                        outputTokens: 1_000,
+                        modelID: "gpt-4.1-mini"
+                    ),
+                    ChatMessage(
+                        role: .assistant,
+                        text: "month",
+                        createdAt: now.addingTimeInterval(-20 * 24 * 60 * 60),
+                        attachments: [],
+                        inputTokens: 3_000,
+                        outputTokens: 3_000,
+                        modelID: "gpt-4.1-mini"
+                    ),
+                    ChatMessage(
+                        role: .assistant,
+                        text: "old",
+                        createdAt: now.addingTimeInterval(-40 * 24 * 60 * 60),
+                        attachments: [],
+                        inputTokens: 4_000,
+                        outputTokens: 4_000,
+                        modelID: "gpt-4.1-mini"
+                    )
+                ]
+            )
+        ]
+
+        let windows = viewModel.usageTimeWindows
+        XCTAssertEqual(windows.map(\.label), ["24h", "7d", "30d"])
+
+        XCTAssertEqual(windows[0].inputTokens, 1_000)
+        XCTAssertEqual(windows[0].outputTokens, 2_000)
+        XCTAssertEqual(windows[0].estimatedCost, 0.0036, accuracy: 0.0000001)
+
+        XCTAssertEqual(windows[1].inputTokens, 3_000)
+        XCTAssertEqual(windows[1].outputTokens, 3_000)
+        XCTAssertEqual(windows[1].estimatedCost, 0.0060, accuracy: 0.0000001)
+
+        XCTAssertEqual(windows[2].inputTokens, 6_000)
+        XCTAssertEqual(windows[2].outputTokens, 6_000)
+        XCTAssertEqual(windows[2].estimatedCost, 0.0120, accuracy: 0.0000001)
+    }
+
+    func testUsageTimeWindowsFallbackToConversationUpdatedAtWhenMessageTimestampIsMissing() async {
+        let now = Date(timeIntervalSince1970: 1_762_000_000)
+        let recorder = ModelListRecorder()
+        let viewModel = makeViewModel(modelMap: [:], recorder: recorder, nowProvider: { now })
+
+        viewModel.savedConversations = [
+            SavedConversation(
+                id: UUID(),
+                provider: .anthropic,
+                title: "legacy",
+                updatedAt: now.addingTimeInterval(-60 * 60),
+                modelID: "claude-3-5-sonnet-latest",
+                messages: [
+                    ChatMessage(
+                        role: .assistant,
+                        text: "legacy msg",
+                        createdAt: nil,
+                        attachments: [],
+                        inputTokens: 500,
+                        outputTokens: 500,
+                        modelID: nil
+                    )
+                ]
+            )
+        ]
+
+        let windows = viewModel.usageTimeWindows
+        XCTAssertEqual(windows[0].inputTokens, 500)
+        XCTAssertEqual(windows[0].outputTokens, 500)
+        XCTAssertEqual(windows[0].estimatedCost, 0.0090, accuracy: 0.0000001)
+    }
+
+    func testUsageTimeWindowsIncludeCurrentUnsavedConversation() async {
+        let now = Date(timeIntervalSince1970: 1_762_000_000)
+        let recorder = ModelListRecorder()
+        let viewModel = makeViewModel(modelMap: [:], recorder: recorder, nowProvider: { now })
+
+        await viewModel.selectProvider(.chatGPT)
+        viewModel.selectModel("gpt-4.1-mini")
+        viewModel.messages = [
+            ChatMessage(role: .user, text: "hi", createdAt: now, attachments: []),
+            ChatMessage(
+                role: .assistant,
+                text: "hello",
+                createdAt: now,
+                attachments: [],
+                inputTokens: 200,
+                outputTokens: 300,
+                modelID: "gpt-4.1-mini"
+            )
+        ]
+
+        let windows = viewModel.usageTimeWindows
+        XCTAssertEqual(windows[0].inputTokens, 200)
+        XCTAssertEqual(windows[0].outputTokens, 300)
+        XCTAssertEqual(windows[0].estimatedCost, 0.00056, accuracy: 0.0000001)
     }
 
     private func makeViewModel(
         modelMap: [AIProvider: [String]],
-        recorder: ModelListRecorder
+        recorder: ModelListRecorder,
+        nowProvider: @escaping () -> Date = Date.init
     ) -> PlaygroundViewModel {
         let keychainService = "com.moosia.AI-ToolsTests.\(UUID().uuidString)"
         return PlaygroundViewModel(
@@ -132,7 +291,8 @@ final class PlaygroundViewModelTests: XCTestCase {
                 MockService(provider: provider, modelMap: modelMap, recorder: recorder)
             },
             keychainStore: KeychainStore(service: keychainService),
-            conversationStoreFactory: { nil }
+            conversationStoreFactory: { nil },
+            nowProvider: nowProvider
         )
     }
 
@@ -142,14 +302,6 @@ final class PlaygroundViewModelTests: XCTestCase {
             return ""
         }
         return string
-    }
-
-    private func decode(_ raw: String) -> [String] {
-        guard let data = raw.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String].self, from: data) else {
-            return []
-        }
-        return decoded
     }
 }
 
@@ -175,12 +327,15 @@ private struct MockService: GeminiServicing {
         return modelMap[provider] ?? []
     }
 
-    func generateReply(
+    func generateReplyStream(
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
         latestUserAttachments: [PendingAttachment]
-    ) async throws -> ModelReply {
-        ModelReply(text: "", generatedMedia: [])
+    ) -> AsyncThrowingStream<ModelReply, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(ModelReply(text: "ok", generatedMedia: []))
+            continuation.finish()
+        }
     }
 }

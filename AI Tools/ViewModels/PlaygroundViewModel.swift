@@ -2,6 +2,15 @@ import Foundation
 import SwiftUI
 import Combine
 
+struct UsageTimeWindowSummary: Identifiable {
+    let label: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let estimatedCost: Double
+
+    var id: String { label }
+}
+
 @MainActor
 final class PlaygroundViewModel: ObservableObject {
     @AppStorage("ai_provider") private var providerStore = AIProvider.gemini.rawValue
@@ -18,6 +27,7 @@ final class PlaygroundViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var errorMessage: String?
     @Published var isLoading = false
+    @Published var streamingText: String = ""
     @Published var selectedProvider: AIProvider = .gemini
     @Published var modelID: String = "gemini-2.5-flash"
     @Published var availableModels: [String] = []
@@ -27,6 +37,7 @@ final class PlaygroundViewModel: ObservableObject {
     private let serviceFactory: (AIProvider, String) -> GeminiServicing
     private let keychainStore: KeychainStore
     private let conversationStore: ConversationStore?
+    private let nowProvider: () -> Date
     private var didAutoLoadModels = false
     private var apiKeysByProvider: [AIProvider: String] = [:]
     private var availableModelsByProvider: [AIProvider: [String]] = [:]
@@ -45,10 +56,12 @@ final class PlaygroundViewModel: ObservableObject {
             }
         },
         keychainStore: KeychainStore = KeychainStore(),
-        conversationStoreFactory: (() -> ConversationStore?)? = nil
+        conversationStoreFactory: (() -> ConversationStore?)? = nil,
+        nowProvider: @escaping () -> Date = Date.init
         ) {
         self.serviceFactory = serviceFactory
         self.keychainStore = keychainStore
+        self.nowProvider = nowProvider
         if let conversationStoreFactory {
             self.conversationStore = conversationStoreFactory()
         } else if let mediaStoreDirectoryURL = Self.makeMediaStoreDirectoryURL() {
@@ -138,7 +151,6 @@ final class PlaygroundViewModel: ObservableObject {
         providerStore = conversation.provider.rawValue
         modelID = conversation.modelID
         availableModels = cachedModels(for: conversation.provider, including: conversation.modelID)
-        persistCurrentModelID()
         messages = conversation.messages
         errorMessage = nil
     }
@@ -196,31 +208,84 @@ final class PlaygroundViewModel: ObservableObject {
             attachments: attachments.map { AttachmentSummary(name: $0.name) }
         ))
         isLoading = true
-        defer { isLoading = false }
+        streamingText = ""
+        defer {
+            isLoading = false
+            streamingText = ""
+        }
+
+        var accumulatedText = ""
+        var accumulatedMedia: [GeneratedMedia] = []
+        var inputTokens = 0
+        var outputTokens = 0
 
         do {
-            let reply = try await serviceFactory(selectedProvider, currentAPIKey).generateReply(
+            let stream = serviceFactory(selectedProvider, currentAPIKey).generateReplyStream(
                 modelID: modelID,
                 systemInstruction: systemInstruction,
                 messages: messages,
                 latestUserAttachments: attachments
             )
+            for try await chunk in stream {
+                accumulatedText += chunk.text
+                accumulatedMedia += chunk.generatedMedia
+                if chunk.inputTokens > 0 { inputTokens = chunk.inputTokens }
+                if chunk.outputTokens > 0 { outputTokens = chunk.outputTokens }
+                streamingText = accumulatedText
+            }
             let persistedMedia: [GeneratedMedia]
             if let conversationStore {
-                persistedMedia = conversationStore.normalizeMedia(reply.generatedMedia)
+                persistedMedia = conversationStore.normalizeMedia(accumulatedMedia)
             } else {
-                persistedMedia = reply.generatedMedia
+                persistedMedia = accumulatedMedia
             }
+            let snapshotModelID = modelID
             messages.append(ChatMessage(
                 role: .assistant,
-                text: reply.text,
+                text: accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines),
                 attachments: [],
-                generatedMedia: persistedMedia
+                generatedMedia: persistedMedia,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                modelID: snapshotModelID
             ))
             upsertCurrentConversation()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    var sessionInputTokens: Int {
+        messages.filter { $0.role == .assistant }.reduce(0) { $0 + $1.inputTokens }
+    }
+
+    var sessionOutputTokens: Int {
+        messages.filter { $0.role == .assistant }.reduce(0) { $0 + $1.outputTokens }
+    }
+
+    var usageTimeWindows: [UsageTimeWindowSummary] {
+        let now = nowProvider()
+        let conversations = conversationsSnapshotForUsage(at: now)
+        return [
+            usageSummary(
+                label: "24h",
+                since: now.addingTimeInterval(-24 * 60 * 60),
+                now: now,
+                conversations: conversations
+            ),
+            usageSummary(
+                label: "7d",
+                since: now.addingTimeInterval(-7 * 24 * 60 * 60),
+                now: now,
+                conversations: conversations
+            ),
+            usageSummary(
+                label: "30d",
+                since: now.addingTimeInterval(-30 * 24 * 60 * 60),
+                now: now,
+                conversations: conversations
+            )
+        ]
     }
 
     private func prefetchModelsOnLaunch() async {
@@ -356,6 +421,73 @@ final class PlaygroundViewModel: ObservableObject {
         return String(cleaned.prefix(48))
     }
 
+    private func conversationsSnapshotForUsage(at now: Date) -> [SavedConversation] {
+        var snapshot = savedConversations
+        guard !messages.isEmpty else { return snapshot }
+
+        if let selectedConversationID,
+           let index = snapshot.firstIndex(where: { $0.id == selectedConversationID }) {
+            snapshot[index].provider = selectedProvider
+            snapshot[index].modelID = modelID
+            snapshot[index].updatedAt = now
+            snapshot[index].messages = messages
+            return snapshot
+        }
+
+        snapshot.insert(
+            SavedConversation(
+                id: selectedConversationID ?? UUID(),
+                provider: selectedProvider,
+                title: inferredConversationTitle(),
+                updatedAt: now,
+                modelID: modelID,
+                messages: messages
+            ),
+            at: 0
+        )
+        return snapshot
+    }
+
+    private func usageSummary(
+        label: String,
+        since: Date,
+        now: Date,
+        conversations: [SavedConversation]
+    ) -> UsageTimeWindowSummary {
+        var inputTokens = 0
+        var outputTokens = 0
+        var estimatedCost = 0.0
+
+        for conversation in conversations {
+            for message in conversation.messages where message.role == .assistant {
+                let timestamp = message.createdAt ?? conversation.updatedAt
+                guard timestamp >= since && timestamp <= now else { continue }
+
+                let input = max(0, message.inputTokens)
+                let output = max(0, message.outputTokens)
+                inputTokens += input
+                outputTokens += output
+
+                let messageModel = message.modelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let effectiveModelID = messageModel.isEmpty ? conversation.modelID : messageModel
+                if let messageCost = TokenCostCalculator.cost(
+                    for: effectiveModelID,
+                    inputTokens: input,
+                    outputTokens: output
+                ) {
+                    estimatedCost += messageCost
+                }
+            }
+        }
+
+        return UsageTimeWindowSummary(
+            label: label,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            estimatedCost: estimatedCost
+        )
+    }
+
     private func loadSavedConversations() async {
         guard let conversationStore else {
             savedConversations = []
@@ -447,6 +579,10 @@ final class PlaygroundViewModel: ObservableObject {
 
     private func cachedModels(for provider: AIProvider, including model: String? = nil) -> [String] {
         var models = availableModelsByProvider[provider] ?? []
+        if models.isEmpty {
+            return models
+        }
+
         if let model, !model.isEmpty, !models.contains(model) {
             models.insert(model, at: 0)
         }

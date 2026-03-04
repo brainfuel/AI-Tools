@@ -1,11 +1,17 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 struct ContentView: View {
     @StateObject private var viewModel = PlaygroundViewModel()
     @State private var prompt = ""
     @State private var isKeyHidden = true
     @State private var historySearch = ""
+    @State private var showingUsageStats = false
     @State private var showingFileImporter = false
     @State private var pendingAttachments: [PendingAttachment] = []
     @FocusState private var inputFocused: Bool
@@ -22,6 +28,24 @@ struct ContentView: View {
             }
             .padding()
             .navigationTitle("AI Tools")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingUsageStats = true
+                    } label: {
+                        Image(systemName: "chart.line.uptrend.xyaxis")
+                    }
+                    .help("Usage Stats")
+                }
+            }
+            .sheet(isPresented: $showingUsageStats) {
+                UsageStatsSheet(
+                    modelID: viewModel.modelID,
+                    sessionInputTokens: viewModel.sessionInputTokens,
+                    sessionOutputTokens: viewModel.sessionOutputTokens,
+                    windows: viewModel.usageTimeWindows
+                )
+            }
         }
 #if os(macOS)
         .navigationSplitViewColumnWidth(min: 220, ideal: 280)
@@ -139,7 +163,7 @@ struct ContentView: View {
                     .disabled(viewModel.isLoading || viewModel.currentAPIKey.isEmpty || !viewModel.canLoadModels)
 
                     if viewModel.availableModels.isEmpty {
-                        Text("Load models to choose one")
+                        Text(viewModel.currentAPIKey.isEmpty ? "Enter API key to load models" : "Load models to choose one")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -170,12 +194,18 @@ struct ContentView: View {
                     }
 
                     if viewModel.isLoading {
-                        HStack {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.82)
-                            Text("Thinking...")
-                                .foregroundStyle(.secondary)
+                        if viewModel.streamingText.isEmpty {
+                            HStack {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 16, height: 16)
+                                Text("Thinking...")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .id("loading-indicator")
+                        } else {
+                            streamingBubble
+                                .id("streaming-bubble")
                         }
                     }
                 }
@@ -188,9 +218,169 @@ struct ContentView: View {
                     }
                 }
             }
+            .onChange(of: viewModel.isLoading) { _, isLoading in
+                if isLoading {
+                    proxy.scrollTo("loading-indicator", anchor: .bottom)
+                }
+            }
+            .onChange(of: viewModel.streamingText) { _, _ in
+                proxy.scrollTo("streaming-bubble", anchor: .bottom)
+            }
             .textSelection(.enabled)
         }
     }
+
+    private var streamingBubble: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(MessageRole.assistant.label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            MarkdownText(viewModel.streamingText)
+                .padding(10)
+                .background(Color.secondary.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+// MARK: - Token usage views
+
+private struct TokenUsageRow: View {
+    let modelID: String
+    let inputTokens: Int
+    let outputTokens: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label("\(inputTokens.formatted()) in", systemImage: "arrow.up")
+            Label("\(outputTokens.formatted()) out", systemImage: "arrow.down")
+            if let cost = TokenCostCalculator.cost(for: modelID, inputTokens: inputTokens, outputTokens: outputTokens) {
+                Text(costString(cost))
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+    }
+
+    private func costString(_ cost: Double) -> String {
+        if cost < 0.0001 {
+            return String(format: "~$%.6f", cost)
+        } else if cost < 0.01 {
+            return String(format: "~$%.4f", cost)
+        } else {
+            return String(format: "~$%.3f", cost)
+        }
+    }
+}
+
+private struct SessionTokenSummary: View {
+    let modelID: String
+    let inputTokens: Int
+    let outputTokens: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chart.bar.xaxis")
+                .imageScale(.small)
+            Text("Session: \(inputTokens.formatted()) in · \(outputTokens.formatted()) out")
+            if let cost = TokenCostCalculator.cost(for: modelID, inputTokens: inputTokens, outputTokens: outputTokens) {
+                Text(costString(cost))
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+
+    private func costString(_ cost: Double) -> String {
+        if cost < 0.0001 {
+            return String(format: "·~$%.6f", cost)
+        } else if cost < 0.01 {
+            return String(format: "·~$%.4f", cost)
+        } else {
+            return String(format: "·~$%.3f", cost)
+        }
+    }
+}
+
+private struct UsageTimeWindowSummaryView: View {
+    let windows: [UsageTimeWindowSummary]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Usage (estimate)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            ForEach(windows) { window in
+                Text(
+                    "\(window.label): \(window.inputTokens.formatted()) in · \(window.outputTokens.formatted()) out · \(costString(window.estimatedCost))"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func costString(_ cost: Double) -> String {
+        if cost < 0.0001 {
+            return String(format: "~$%.6f", cost)
+        } else if cost < 0.01 {
+            return String(format: "~$%.4f", cost)
+        } else {
+            return String(format: "~$%.3f", cost)
+        }
+    }
+}
+
+private struct UsageStatsSheet: View {
+    let modelID: String
+    let sessionInputTokens: Int
+    let sessionOutputTokens: Int
+    let windows: [UsageTimeWindowSummary]
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Usage Stats", systemImage: "chart.line.uptrend.xyaxis")
+                    .font(.headline)
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+            }
+
+            GroupBox("Current Chat") {
+                if sessionInputTokens > 0 || sessionOutputTokens > 0 {
+                    SessionTokenSummary(
+                        modelID: modelID,
+                        inputTokens: sessionInputTokens,
+                        outputTokens: sessionOutputTokens
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("No token usage yet in this chat.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            GroupBox("Rolling Totals") {
+                UsageTimeWindowSummaryView(windows: windows)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Spacer()
+        }
+        .padding(16)
+        .frame(minWidth: 420, minHeight: 250)
+    }
+}
+
+// Needed because the extension closing brace was consumed above
+private extension ContentView {
 
     private var composerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -238,9 +428,15 @@ struct ContentView: View {
 
             HStack {
                 if let errorMessage = viewModel.errorMessage {
-                    Text(errorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
+                    Button {
+                        copyToClipboard(errorMessage)
+                    } label: {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to copy error")
                 } else {
                     Text("Ready")
                         .font(.footnote)
@@ -311,6 +507,15 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
+
+            if message.role == .assistant,
+               message.inputTokens > 0 || message.outputTokens > 0 {
+                TokenUsageRow(
+                    modelID: message.modelID ?? "",
+                    inputTokens: message.inputTokens,
+                    outputTokens: message.outputTokens
+                )
+            }
         }
     }
 
@@ -354,5 +559,14 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func copyToClipboard(_ value: String) {
+#if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+#elseif canImport(UIKit)
+        UIPasteboard.general.string = value
+#endif
     }
 }
