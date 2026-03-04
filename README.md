@@ -19,9 +19,12 @@ AI Tools lets you:
 ## Features
 
 - Unified chat UI across providers
-- Provider-specific API keys and model IDs saved per provider
+- Provider-specific API keys in Keychain
+- Provider + selected model saved per conversation
 - Conversation sidebar with new/delete/search
 - Markdown rendering for assistant responses
+- Cached model lists per provider (instant when switching chats/providers)
+- Startup model prefetch for providers that already have API keys
 - Attachment import with image preprocessing (center-crop to square, resize up to 1280x1280, JPEG encode)
 - 18 MB attachment size limit per file
 - Media output viewer with Save export flow
@@ -65,17 +68,33 @@ xcodebuild -project "AI Tools.xcodeproj" -scheme "AI Tools" -configuration Debug
 
 1. Select a provider in the **Connection** section.
 2. Paste the provider API key.
-3. (Optional) Click **Load Models** and choose a model.
-4. Add system instructions if needed.
-5. Type a prompt, optionally attach files, then click **Send**.
-6. Use the chat history sidebar to reopen prior conversations.
+3. (Optional) Click **Load Models** to refresh provider models.
+4. Choose a model from **Available Models**.
+5. Model lists appear immediately from cache when switching chats/providers.
+6. Add system instructions if needed.
+7. Type a prompt, optionally attach files, then click **Send**.
+8. Use the chat history sidebar to reopen prior conversations.
 
 ## Data Storage
 
 - API keys are stored securely in the system Keychain.
-- Selected provider/model/system-instruction settings are stored locally using `@AppStorage` (UserDefaults).
-- Saved conversations are stored as JSON under Application Support.
+- Selected provider/model/system-instruction and model-list caches are stored locally using `@AppStorage` (UserDefaults).
+- Conversations are stored locally with SwiftData.
 - No server-side app backend is included in this project.
+
+## Testing
+
+This project includes unit tests for `PlaygroundViewModel`, including:
+
+- cached models shown immediately when switching conversations/providers
+- startup model prefetch behavior
+- one-time launch prefetch guard
+
+Run tests:
+
+```bash
+xcodebuild -project "AI Tools.xcodeproj" -scheme "AI Tools" -destination "platform=macOS" -configuration Debug CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test
+```
 
 ## Project Structure
 
@@ -86,12 +105,13 @@ xcodebuild -project "AI Tools.xcodeproj" -scheme "AI Tools" -configuration Debug
 - [AI Tools/Networking/GeminiClient.swift](AI%20Tools/Networking/GeminiClient.swift): Gemini API integration
 - [AI Tools/Networking/OpenAIClient.swift](AI%20Tools/Networking/OpenAIClient.swift): OpenAI API integration
 - [AI Tools/Networking/AnthropicClient.swift](AI%20Tools/Networking/AnthropicClient.swift): Anthropic API integration
+- [AI Tools/Storage/ConversationStore.swift](AI%20Tools/Storage/ConversationStore.swift): SwiftData conversation persistence
 - [AI Tools/Views/ChatRenderingViews.swift](AI%20Tools/Views/ChatRenderingViews.swift): Message/media rendering components
+- [AI ToolsTests/PlaygroundViewModelTests.swift](AI%20ToolsTests/PlaygroundViewModelTests.swift): Model cache and prefetch unit tests
 
 ## Known Limitations
 
 - OpenAI and Anthropic attachment upload is not implemented yet.
-- There are no automated tests yet.
 
 ## License
 
