@@ -102,59 +102,53 @@ struct ContentView: View {
         VStack(spacing: 8) {
             HStack(spacing: 0) {
                 Button {
-                    viewModel.startNewChat()
+                    if workspaceMode == .single {
+                        viewModel.startNewChat()
+                    } else {
+                        compareViewModel.startNewThread()
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }
-                .accessibilityLabel("New Chat")
+                .accessibilityLabel(workspaceMode == .single ? "New Chat" : "New Compare")
                 .buttonStyle(.borderedProminent)
 
 
                 Spacer()
                 
                 Button(role: .destructive) {
-                    viewModel.deleteSelectedConversation()
+                    if workspaceMode == .single {
+                        viewModel.deleteSelectedConversation()
+                    } else {
+                        compareViewModel.deleteSelectedConversation()
+                    }
                 } label: {
                     Image(systemName: "trash")
                 }
-                .accessibilityLabel("Delete Chat")
+                .accessibilityLabel(workspaceMode == .single ? "Delete Chat" : "Delete Compare")
                 .buttonStyle(.bordered)
-                .disabled(viewModel.selectedConversationID == nil)
+                .disabled(
+                    workspaceMode == .single
+                        ? viewModel.selectedConversationID == nil
+                        : compareViewModel.selectedConversationID == nil
+                )
 
              
             }
 
-            TextField("Search History", text: $historySearch)
+            TextField(workspaceMode == .single ? "Search History" : "Search Compares", text: $historySearch)
                 .textFieldStyle(.roundedBorder)
 
             List {
-                Button {
-                    viewModel.selectConversation(nil)
-                } label: {
-                    HStack {
-                        Image(systemName: "plus.bubble")
-                        Text("Current Chat")
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-                .listRowBackground(viewModel.selectedConversationID == nil ? Color.accentColor.opacity(0.14) : Color.clear)
-
-                ForEach(viewModel.filteredConversations(query: historySearch)) { conversation in
+                if workspaceMode == .single {
                     Button {
-                        viewModel.selectConversation(conversation.id)
+                        viewModel.selectConversation(nil)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(conversation.title)
+                        HStack {
+                            Image(systemName: "plus.bubble")
+                            Text("Current Chat")
                                 .lineLimit(1)
-                            Text(conversation.updatedAt, format: .dateTime.year().month().day().hour().minute())
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -162,11 +156,73 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 4)
-                    .listRowBackground(viewModel.selectedConversationID == conversation.id ? Color.accentColor.opacity(0.14) : Color.clear)
+                    .listRowBackground(viewModel.selectedConversationID == nil ? Color.accentColor.opacity(0.14) : Color.clear)
+
+                    ForEach(viewModel.filteredConversations(query: historySearch)) { conversation in
+                        Button {
+                            viewModel.selectConversation(conversation.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(conversation.title)
+                                    .lineLimit(1)
+                                Text(conversation.updatedAt, format: .dateTime.year().month().day().hour().minute())
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                        .listRowBackground(viewModel.selectedConversationID == conversation.id ? Color.accentColor.opacity(0.14) : Color.clear)
+                    }
+                } else {
+                    Button {
+                        compareViewModel.selectConversation(nil)
+                    } label: {
+                        HStack {
+                            Image(systemName: "rectangle.3.group.bubble.left")
+                            Text("Current Compare")
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                    .listRowBackground(compareViewModel.selectedConversationID == nil ? Color.accentColor.opacity(0.14) : Color.clear)
+
+                    ForEach(compareViewModel.filteredConversations(query: historySearch)) { conversation in
+                        Button {
+                            compareViewModel.selectConversation(conversation.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(conversation.title)
+                                    .lineLimit(1)
+                                Text(conversation.updatedAt, format: .dateTime.year().month().day().hour().minute())
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                        .listRowBackground(compareViewModel.selectedConversationID == conversation.id ? Color.accentColor.opacity(0.14) : Color.clear)
+                    }
                 }
             }
             .listStyle(.sidebar)
-            .animation(.easeInOut(duration: 0.2), value: viewModel.savedConversations.map(\.id))
+            .animation(
+                .easeInOut(duration: 0.2),
+                value: workspaceMode == .single
+                    ? viewModel.savedConversations.map(\.id)
+                    : compareViewModel.savedConversations.map(\.id)
+            )
         }
     }
 
@@ -714,14 +770,14 @@ private struct UsageStatsSheet: View {
     }
 }
 
-private enum CompareResultState {
+private enum CompareResultState: String, Codable {
     case loading
     case success
     case failed
     case skipped
 }
 
-private struct CompareProviderResult {
+private struct CompareProviderResult: Codable {
     var state: CompareResultState
     var modelID: String
     var text: String
@@ -731,12 +787,27 @@ private struct CompareProviderResult {
     var errorMessage: String?
 }
 
-private struct CompareRun: Identifiable {
+private struct CompareRun: Identifiable, Codable {
     let id: UUID
     let prompt: String
     let attachments: [AttachmentSummary]
     let createdAt: Date
     var results: [AIProvider: CompareProviderResult]
+}
+
+private struct CompareConversation: Identifiable, Codable {
+    var id: UUID
+    var title: String
+    var updatedAt: Date
+    var runs: [CompareRun]
+
+    var searchBlob: String {
+        let prompts = runs.map(\.prompt).joined(separator: "\n")
+        let replies = runs.flatMap { run in
+            run.results.values.map(\.text)
+        }.joined(separator: "\n")
+        return "\(title)\n\(prompts)\n\(replies)"
+    }
 }
 
 @MainActor
@@ -747,7 +818,10 @@ private final class CompareViewModel: ObservableObject {
     @AppStorage("gemini_models_cache_v1") private var geminiModelsCache = ""
     @AppStorage("openai_models_cache_v1") private var openAIModelsCache = ""
     @AppStorage("anthropic_models_cache_v1") private var anthropicModelsCache = ""
+    @AppStorage("compare_conversations_v1") private var compareConversationsStore = ""
 
+    @Published var savedConversations: [CompareConversation] = []
+    @Published var selectedConversationID: UUID?
     @Published var runs: [CompareRun] = []
     @Published var errorMessage: String?
     @Published private(set) var isSending = false
@@ -776,6 +850,7 @@ private final class CompareViewModel: ObservableObject {
     ) {
         self.serviceFactory = serviceFactory
         self.keychainStore = keychainStore
+        loadSavedConversations()
         reloadFromStorage()
     }
 
@@ -807,6 +882,49 @@ private final class CompareViewModel: ObservableObject {
         loadAPIKeysFromSecureStorage()
         loadSelectedModelsFromStorage()
         loadModelCachesFromStorage()
+        if let selectedConversationID {
+            if let conversation = savedConversations.first(where: { $0.id == selectedConversationID }) {
+                runs = conversation.runs
+            } else {
+                self.selectedConversationID = nil
+            }
+        }
+    }
+
+    func startNewThread() {
+        selectedConversationID = nil
+        runs.removeAll()
+        errorMessage = nil
+    }
+
+    func selectConversation(_ id: UUID?) {
+        selectedConversationID = id
+        guard let id,
+              let conversation = savedConversations.first(where: { $0.id == id }) else {
+            runs.removeAll()
+            errorMessage = nil
+            return
+        }
+        runs = conversation.runs
+        errorMessage = nil
+    }
+
+    func deleteSelectedConversation() {
+        guard let id = selectedConversationID else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            savedConversations.removeAll { $0.id == id }
+            selectedConversationID = nil
+            runs.removeAll()
+        }
+        persistSavedConversations()
+    }
+
+    func filteredConversations(query: String) -> [CompareConversation] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return savedConversations }
+        return savedConversations.filter { conversation in
+            conversation.searchBlob.localizedCaseInsensitiveContains(needle)
+        }
     }
 
     func selectedModel(for provider: AIProvider) -> String {
@@ -902,6 +1020,7 @@ private final class CompareViewModel: ObservableObject {
             results: initialResults
         )
         runs.insert(run, at: 0)
+        upsertCurrentConversation()
 
         let runID = run.id
         isSending = true
@@ -916,6 +1035,7 @@ private final class CompareViewModel: ObservableObject {
         }
 
         isSending = false
+        upsertCurrentConversation()
     }
 
     private func executeRun(
@@ -1100,6 +1220,56 @@ private final class CompareViewModel: ObservableObject {
             return []
         }
         return decoded
+    }
+
+    private func upsertCurrentConversation() {
+        guard !runs.isEmpty else { return }
+
+        let title = makeTitle(from: runs.first?.prompt ?? "Compare")
+        let now = Date()
+
+        if let id = selectedConversationID,
+           let index = savedConversations.firstIndex(where: { $0.id == id }) {
+            savedConversations[index].runs = runs
+            savedConversations[index].title = title
+            savedConversations[index].updatedAt = now
+        } else {
+            let id = UUID()
+            let conversation = CompareConversation(
+                id: id,
+                title: title,
+                updatedAt: now,
+                runs: runs
+            )
+            savedConversations.insert(conversation, at: 0)
+            selectedConversationID = id
+        }
+
+        savedConversations.sort { $0.updatedAt > $1.updatedAt }
+        persistSavedConversations()
+    }
+
+    private func makeTitle(from prompt: String) -> String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Compare Thread" }
+        let compact = trimmed.replacingOccurrences(of: "\n", with: " ")
+        return compact.count > 44 ? String(compact.prefix(44)) + "..." : compact
+    }
+
+    private func loadSavedConversations() {
+        guard !compareConversationsStore.isEmpty,
+              let data = compareConversationsStore.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([CompareConversation].self, from: data) else {
+            savedConversations = []
+            return
+        }
+        savedConversations = decoded.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func persistSavedConversations() {
+        guard let data = try? JSONEncoder().encode(savedConversations),
+              let encoded = String(data: data, encoding: .utf8) else { return }
+        compareConversationsStore = encoded
     }
 }
 
