@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		A10000062F6000010095EB2B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 659B77A92F5100600095EB2B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 659B77B02F5100600095EB2B;
+			remoteInfo = "AI Tools";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		659B77B12F5100600095EB2B /* AI Tools.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "AI Tools.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000012F6000010095EB2B /* AI ToolsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "AI ToolsTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -29,10 +40,22 @@
 			path = "AI Tools";
 			sourceTree = "<group>";
 		};
+		A10000022F6000010095EB2B /* AI ToolsTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "AI ToolsTests";
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		659B77AE2F5100600095EB2B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000032F6000010095EB2B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -46,6 +69,7 @@
 			isa = PBXGroup;
 			children = (
 				659B77B32F5100600095EB2B /* AI Tools */,
+				A10000022F6000010095EB2B /* AI ToolsTests */,
 				659B77B22F5100600095EB2B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -54,6 +78,7 @@
 			isa = PBXGroup;
 			children = (
 				659B77B12F5100600095EB2B /* AI Tools.app */,
+				A10000012F6000010095EB2B /* AI ToolsTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -83,6 +108,29 @@
 			productReference = 659B77B12F5100600095EB2B /* AI Tools.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A10000082F6000010095EB2B /* AI ToolsTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A100000B2F6000010095EB2B /* Build configuration list for PBXNativeTarget "AI ToolsTests" */;
+			buildPhases = (
+				A10000052F6000010095EB2B /* Sources */,
+				A10000032F6000010095EB2B /* Frameworks */,
+				A10000042F6000010095EB2B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A10000072F6000010095EB2B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A10000022F6000010095EB2B /* AI ToolsTests */,
+			);
+			name = "AI ToolsTests";
+			packageProductDependencies = (
+			);
+			productName = "AI ToolsTests";
+			productReference = A10000012F6000010095EB2B /* AI ToolsTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -95,6 +143,10 @@
 				TargetAttributes = {
 					659B77B02F5100600095EB2B = {
 						CreatedOnToolsVersion = 26.2;
+					};
+					A10000082F6000010095EB2B = {
+						CreatedOnToolsVersion = 26.2;
+						TestTargetID = 659B77B02F5100600095EB2B;
 					};
 				};
 			};
@@ -113,12 +165,20 @@
 			projectRoot = "";
 			targets = (
 				659B77B02F5100600095EB2B /* AI Tools */,
+				A10000082F6000010095EB2B /* AI ToolsTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		659B77AF2F5100600095EB2B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000042F6000010095EB2B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -135,7 +195,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A10000052F6000010095EB2B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A10000072F6000010095EB2B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 659B77B02F5100600095EB2B /* AI Tools */;
+			targetProxy = A10000062F6000010095EB2B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		659B77C02F5100620095EB2B /* Debug */ = {
@@ -346,6 +421,62 @@
 			};
 			name = Release;
 		};
+		A10000092F6000010095EB2B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NC83U5R385;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.moosia.AI-ToolsTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_TARGET_NAME = "AI Tools";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AI Tools.app/Contents/MacOS/AI Tools";
+				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Debug;
+		};
+		A100000A2F6000010095EB2B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NC83U5R385;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.moosia.AI-ToolsTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_TARGET_NAME = "AI Tools";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AI Tools.app/Contents/MacOS/AI Tools";
+				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -363,6 +494,15 @@
 			buildConfigurations = (
 				659B77C02F5100620095EB2B /* Debug */,
 				659B77C12F5100620095EB2B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A100000B2F6000010095EB2B /* Build configuration list for PBXNativeTarget "AI ToolsTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000092F6000010095EB2B /* Debug */,
+				A100000A2F6000010095EB2B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
