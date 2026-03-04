@@ -9,6 +9,9 @@ final class PlaygroundViewModel: ObservableObject {
     @AppStorage("gemini_model_id") private var geminiModelID = "gemini-2.5-flash"
     @AppStorage("openai_model_id") private var openAIModelID = "gpt-4.1-mini"
     @AppStorage("anthropic_model_id") private var anthropicModelID = "claude-3-5-sonnet-latest"
+    @AppStorage("gemini_models_cache_v1") private var geminiModelsCache = ""
+    @AppStorage("openai_models_cache_v1") private var openAIModelsCache = ""
+    @AppStorage("anthropic_models_cache_v1") private var anthropicModelsCache = ""
 
     @AppStorage("gemini_system_instruction") var systemInstruction = ""
 
@@ -235,37 +238,22 @@ final class PlaygroundViewModel: ObservableObject {
         }
     }
 
-    private func autoLoadModelsIfPossible() async {
-        guard canLoadModels else { return }
-        guard !currentAPIKey.isEmpty else { return }
-        await refreshModels()
+    private func prefetchModelsOnLaunch() async {
+        for provider in AIProvider.allCases where supportsModelLoading(provider) {
+            guard !(apiKeysByProvider[provider] ?? "").isEmpty else { continue }
+            await fetchModels(for: provider, reportErrorsForSelectedProvider: provider == selectedProvider)
+        }
     }
 
     private func loadAPIKeysFromSecureStorage() {
-        let defaults = UserDefaults.standard
-
         for provider in AIProvider.allCases {
             let account = keychainAccount(for: provider)
 
             if let secureValue = try? keychainStore.string(for: account),
                !secureValue.isEmpty {
                 apiKeysByProvider[provider] = secureValue
-                cleanupLegacyAPIKey(for: provider, defaults: defaults)
-                continue
-            }
-
-            let legacyValue = legacyAPIKeyValue(for: provider, defaults: defaults)
-            if !legacyValue.isEmpty {
-                apiKeysByProvider[provider] = legacyValue
-                do {
-                    try keychainStore.setString(legacyValue, for: account)
-                    cleanupLegacyAPIKey(for: provider, defaults: defaults)
-                } catch {
-                    errorMessage = "Failed to store \(provider.displayName) API key in Keychain: \(error.localizedDescription)"
-                }
             } else {
                 apiKeysByProvider[provider] = ""
-                cleanupLegacyAPIKey(for: provider, defaults: defaults)
             }
         }
     }
@@ -287,41 +275,13 @@ final class PlaygroundViewModel: ObservableObject {
             } else {
                 try keychainStore.setString(value, for: keychainAccount(for: provider))
             }
-            cleanupLegacyAPIKey(for: provider, defaults: .standard)
         } catch {
             errorMessage = "Failed to persist \(provider.displayName) API key to Keychain: \(error.localizedDescription)"
         }
     }
 
-    private func legacyAPIKeyValue(for provider: AIProvider, defaults: UserDefaults) -> String {
-        guard let key = Self.legacyAPIKeyDefaultsKeys[provider] else { return "" }
-        return defaults.string(forKey: key) ?? ""
-    }
-
-    private func cleanupLegacyAPIKey(for provider: AIProvider, defaults: UserDefaults) {
-        guard let key = Self.legacyAPIKeyDefaultsKeys[provider] else { return }
-        defaults.removeObject(forKey: key)
-    }
-
     private func keychainAccount(for provider: AIProvider) -> String {
         "api-key.\(provider.rawValue)"
-    }
-
-    private static func makeLegacyConversationStoreURL() -> URL? {
-        do {
-            let fileManager = FileManager.default
-            let appSupport = try fileManager.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let appFolder = appSupport.appendingPathComponent("AI Tools", isDirectory: true)
-            try fileManager.createDirectory(at: appFolder, withIntermediateDirectories: true)
-            return appFolder.appendingPathComponent("saved_conversations_v2.json")
-        } catch {
-            return nil
-        }
     }
 
     private static func makeMediaStoreDirectoryURL() -> URL? {
