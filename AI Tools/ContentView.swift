@@ -286,6 +286,298 @@ struct ContentView: View {
     }
 }
 
+private extension ContentView {
+    var compareModeSection: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(AIProvider.allCases) { provider in
+                    compareProviderColumn(provider)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            compareComposerSection
+        }
+    }
+
+    func compareProviderColumn(_ provider: AIProvider) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(provider.displayName)
+                    .font(.headline)
+                Spacer()
+                if compareViewModel.hasAPIKey(for: provider) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .help("API key is configured")
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .help("Missing API key")
+                }
+            }
+
+            HStack(spacing: 8) {
+                if compareViewModel.modelsForPicker(for: provider).isEmpty {
+                    Text("No models cached")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Model", selection: compareModelBinding(for: provider)) {
+                        ForEach(compareViewModel.modelsForPicker(for: provider), id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                Button("Load") {
+                    Task {
+                        await compareViewModel.refreshModels(for: provider)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(compareViewModel.isSending || !compareViewModel.hasAPIKey(for: provider))
+            }
+
+            if let message = compareViewModel.providerStatusMessage(provider),
+               !message.isEmpty {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if compareViewModel.runs.isEmpty {
+                        Text("No compare runs yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(compareViewModel.runs) { run in
+                            compareRunCard(run: run, provider: provider)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .textSelection(.enabled)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    func compareRunCard(run: CompareRun, provider: AIProvider) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(run.createdAt, format: .dateTime.hour().minute().second())
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Text(run.prompt)
+                .font(.subheadline)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if !run.attachments.isEmpty {
+                ForEach(run.attachments) { attachment in
+                    MessageAttachmentView(attachment: attachment)
+                }
+            }
+
+            if let result = run.results[provider] {
+                switch result.state {
+                case .loading:
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 16, height: 16)
+                        Text("Thinking...")
+                            .foregroundStyle(.secondary)
+                    }
+                    if !result.text.isEmpty {
+                        MarkdownText(result.text)
+                            .padding(8)
+                            .background(Color.secondary.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                case .success:
+                    if !result.text.isEmpty {
+                        MarkdownText(result.text)
+                            .padding(8)
+                            .background(Color.secondary.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    if !result.generatedMedia.isEmpty {
+                        ForEach(result.generatedMedia) { media in
+                            AssistantMediaView(media: media)
+                                .frame(maxWidth: 360)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                    if result.inputTokens > 0 || result.outputTokens > 0 {
+                        TokenUsageRow(
+                            modelID: result.modelID,
+                            inputTokens: result.inputTokens,
+                            outputTokens: result.outputTokens
+                        )
+                    }
+                case .failed:
+                    if let error = result.errorMessage {
+                        Button {
+                            copyToClipboard(error)
+                        } label: {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Click to copy error")
+                    }
+                case .skipped:
+                    Text(result.errorMessage ?? "Skipped")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    var compareComposerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !comparePendingAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(comparePendingAttachments) { attachment in
+                            VStack(alignment: .leading, spacing: 6) {
+                                ZStack(alignment: .topTrailing) {
+                                    AttachmentPreview(attachment: attachment)
+                                        .frame(width: 120, height: 80)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                    Button {
+                                        comparePendingAttachments.removeAll { $0.id == attachment.id }
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.white, .black.opacity(0.65))
+                                            .padding(4)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                Text(attachment.name)
+                                    .lineLimit(1)
+                                    .font(.caption)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(Color.secondary.opacity(0.15))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
+            }
+
+            TextEditor(text: $comparePrompt)
+                .focused($compareInputFocused)
+                .padding(8)
+                .frame(minHeight: 90, maxHeight: 150)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.secondary.opacity(0.3))
+                }
+
+            HStack {
+                if let errorMessage = compareViewModel.errorMessage {
+                    Button {
+                        copyToClipboard(errorMessage)
+                    } label: {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to copy error")
+                } else {
+                    Text(compareViewModel.composerStatusLabel)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Attach") {
+                    showingCompareFileImporter = true
+                }
+                .buttonStyle(.bordered)
+                .disabled(compareViewModel.isSending)
+
+                Button("Send All") {
+                    sendCompareMessage()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    compareViewModel.isSending ||
+                    (comparePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && comparePendingAttachments.isEmpty)
+                )
+            }
+        }
+        .fileImporter(
+            isPresented: $showingCompareFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            handleCompareImportResult(result)
+        }
+    }
+
+    func compareModelBinding(for provider: AIProvider) -> Binding<String> {
+        Binding(
+            get: { compareViewModel.selectedModel(for: provider) },
+            set: { compareViewModel.selectModel($0, for: provider) }
+        )
+    }
+
+    func sendCompareMessage() {
+        let text = comparePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !comparePendingAttachments.isEmpty else { return }
+        let attachments = comparePendingAttachments
+        comparePrompt = ""
+        comparePendingAttachments = []
+        compareInputFocused = false
+        Task {
+            await compareViewModel.sendCompare(text: text, attachments: attachments)
+        }
+    }
+
+    func handleCompareImportResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            compareViewModel.errorMessage = "Attachment import failed: \(error.localizedDescription)"
+        case .success(let urls):
+            for url in urls {
+                do {
+                    let attachment = try PendingAttachment.fromFileURL(url)
+                    comparePendingAttachments.append(attachment)
+                } catch {
+                    compareViewModel.errorMessage = "Failed to load \(url.lastPathComponent): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Token usage views
 
 private struct TokenUsageRow: View {
