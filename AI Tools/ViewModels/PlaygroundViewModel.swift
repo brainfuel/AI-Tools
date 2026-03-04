@@ -143,9 +143,11 @@ final class PlaygroundViewModel: ObservableObject {
 
     func deleteSelectedConversation() {
         guard let id = selectedConversationID else { return }
-        savedConversations.removeAll { $0.id == id }
-        selectedConversationID = nil
-        messages.removeAll()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            savedConversations.removeAll { $0.id == id }
+            selectedConversationID = nil
+            messages.removeAll()
+        }
         persistSavedConversations()
     }
 
@@ -372,7 +374,9 @@ final class PlaygroundViewModel: ObservableObject {
             messages: messages
         )
         selectedConversationID = conversation.id
-        savedConversations.insert(conversation, at: 0)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            savedConversations.insert(conversation, at: 0)
+        }
         persistSavedConversations()
     }
 
