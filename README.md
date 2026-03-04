@@ -2,9 +2,10 @@
 
 A SwiftUI AI playground app for chatting with multiple providers from one interface, in either single-chat or side-by-side compare mode.
 
-## Screenshot
+## Screenshots
 
-![AI Tools app screenshot](docs/images/screenshot1.png)
+![AI Tools app screenshot 1](docs/images/screenshot1.png)
+![AI Tools app screenshot 2](docs/images/screenshot2.png)
 
 ## Overview
 
