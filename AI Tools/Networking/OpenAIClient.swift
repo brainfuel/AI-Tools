@@ -96,26 +96,12 @@ struct OpenAIClient: GeminiServicing {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
 
-        var payloadMessages: [OpenAIChatMessage] = []
-        if !systemInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            payloadMessages.append(OpenAIChatMessage(role: "system", content: systemInstruction))
-        }
-        payloadMessages.append(contentsOf: messages.map { message in
-            OpenAIChatMessage(
-                role: message.role == .assistant ? "assistant" : "user",
-                content: message.text
-            )
-        })
-
-        if !latestUserAttachments.isEmpty {
-            payloadMessages.append(OpenAIChatMessage(
-                role: "user",
-                content: "Note: \(latestUserAttachments.count) attachment(s) were selected but are not yet sent for ChatGPT in this app."
-            ))
-        }
-
-        let payload = OpenAIChatStreamRequest(model: modelID, messages: payloadMessages)
-        request.httpBody = try JSONEncoder().encode(payload)
+        request.httpBody = try makeChatRequestBody(
+            modelID: modelID,
+            systemInstruction: systemInstruction,
+            messages: messages,
+            latestUserAttachments: latestUserAttachments
+        )
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -161,6 +147,90 @@ struct OpenAIClient: GeminiServicing {
             throw GeminiError.emptyReply
         }
         continuation.finish()
+    }
+
+    func makeChatRequestBody(
+        modelID: String,
+        systemInstruction: String,
+        messages: [ChatMessage],
+        latestUserAttachments: [PendingAttachment]
+    ) throws -> Data {
+        let payload = OpenAIChatStreamRequest(
+            model: modelID,
+            messages: buildChatPayloadMessages(
+                systemInstruction: systemInstruction,
+                messages: messages,
+                latestUserAttachments: latestUserAttachments
+            )
+        )
+        return try JSONEncoder().encode(payload)
+    }
+
+    private func buildChatPayloadMessages(
+        systemInstruction: String,
+        messages: [ChatMessage],
+        latestUserAttachments: [PendingAttachment]
+    ) -> [OpenAIChatMessage] {
+        var payloadMessages: [OpenAIChatMessage] = []
+
+        if !systemInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payloadMessages.append(OpenAIChatMessage(role: "system", content: systemInstruction))
+        }
+
+        let lastUserIndex = messages.lastIndex { $0.role == .user }
+        for (index, message) in messages.enumerated() {
+            let role = message.role == .assistant ? "assistant" : "user"
+            guard let lastUserIndex,
+                  index == lastUserIndex,
+                  !latestUserAttachments.isEmpty else {
+                payloadMessages.append(OpenAIChatMessage(role: role, content: message.text))
+                continue
+            }
+
+            var parts: [OpenAIChatContentPart] = []
+            let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                parts.append(OpenAIChatContentPart(text: message.text))
+            }
+
+            let imageAttachments = latestUserAttachments.filter {
+                $0.mimeType.hasPrefix("image/") && !$0.base64Data.isEmpty
+            }
+            parts.append(contentsOf: imageAttachments.map { attachment in
+                OpenAIChatContentPart(imageDataURL: "data:\(attachment.mimeType);base64,\(attachment.base64Data)")
+            })
+
+            let unsupportedCount = latestUserAttachments.count - imageAttachments.count
+            if unsupportedCount > 0 {
+                parts.append(
+                    OpenAIChatContentPart(
+                        text: "Note: \(unsupportedCount) non-image attachment(s) were skipped for ChatGPT in this app."
+                    )
+                )
+            }
+
+            if parts.isEmpty {
+                parts.append(OpenAIChatContentPart(text: "(Attachment only)"))
+            }
+
+            payloadMessages.append(OpenAIChatMessage(role: role, contentParts: parts))
+        }
+
+        if lastUserIndex == nil, !latestUserAttachments.isEmpty {
+            let parts = latestUserAttachments
+                .filter { $0.mimeType.hasPrefix("image/") && !$0.base64Data.isEmpty }
+                .map { attachment in
+                    OpenAIChatContentPart(imageDataURL: "data:\(attachment.mimeType);base64,\(attachment.base64Data)")
+                }
+
+            if parts.isEmpty {
+                payloadMessages.append(OpenAIChatMessage(role: "user", content: "(Attachment only)"))
+            } else {
+                payloadMessages.append(OpenAIChatMessage(role: "user", contentParts: parts))
+            }
+        }
+
+        return payloadMessages
     }
 
     private func generateImageReply(modelID: String, messages: [ChatMessage]) async throws -> ModelReply {
@@ -283,9 +353,68 @@ private struct OpenAIImageData: Decodable {
     }
 }
 
-private struct OpenAIChatMessage: Codable {
+private struct OpenAIChatMessage: Encodable {
     let role: String
-    let content: String
+    private let contentValue: OpenAIChatContentValue
+
+    init(role: String, content: String) {
+        self.role = role
+        self.contentValue = .text(content)
+    }
+
+    init(role: String, contentParts: [OpenAIChatContentPart]) {
+        self.role = role
+        self.contentValue = .parts(contentParts)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case role
+        case content
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(role, forKey: .role)
+        switch contentValue {
+        case .text(let text):
+            try container.encode(text, forKey: .content)
+        case .parts(let parts):
+            try container.encode(parts, forKey: .content)
+        }
+    }
+}
+
+private enum OpenAIChatContentValue {
+    case text(String)
+    case parts([OpenAIChatContentPart])
+}
+
+private struct OpenAIChatContentPart: Encodable {
+    let type: String
+    let text: String?
+    let imageURL: OpenAIImageURLPart?
+
+    init(text: String) {
+        self.type = "text"
+        self.text = text
+        self.imageURL = nil
+    }
+
+    init(imageDataURL: String) {
+        self.type = "image_url"
+        self.text = nil
+        self.imageURL = OpenAIImageURLPart(url: imageDataURL)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case imageURL = "image_url"
+    }
+}
+
+private struct OpenAIImageURLPart: Encodable {
+    let url: String
 }
 
 private struct OpenAIStreamChunk: Decodable {

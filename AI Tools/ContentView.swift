@@ -494,9 +494,7 @@ private extension ContentView {
 
             if !message.attachments.isEmpty {
                 ForEach(message.attachments) { attachment in
-                    Text("Attachment: \(attachment.name)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    MessageAttachmentView(attachment: attachment)
                 }
             }
 

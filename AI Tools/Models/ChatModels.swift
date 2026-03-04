@@ -45,10 +45,42 @@ enum MessageRole: String, Codable {
 struct AttachmentSummary: Identifiable, Codable {
     let id: UUID
     let name: String
+    let mimeType: String?
+    let previewBase64Data: String?
 
-    init(id: UUID = UUID(), name: String) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        mimeType: String? = nil,
+        previewBase64Data: String? = nil
+    ) {
         self.id = id
         self.name = name
+        self.mimeType = mimeType
+        self.previewBase64Data = previewBase64Data
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case mimeType
+        case previewBase64Data
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        mimeType = try container.decodeIfPresent(String.self, forKey: .mimeType)
+        previewBase64Data = try container.decodeIfPresent(String.self, forKey: .previewBase64Data)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(mimeType, forKey: .mimeType)
+        try container.encodeIfPresent(previewBase64Data, forKey: .previewBase64Data)
     }
 }
 

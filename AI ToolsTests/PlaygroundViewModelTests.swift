@@ -305,6 +305,46 @@ final class PlaygroundViewModelTests: XCTestCase {
     }
 }
 
+final class OpenAIClientAttachmentEncodingTests: XCTestCase {
+    func testMakeChatRequestBodyIncludesImageDataURLForLatestUserAttachment() throws {
+        let client = OpenAIClient(apiKey: "test-key")
+        let imageBase64 = Data([0x01, 0x02, 0x03]).base64EncodedString()
+        let attachments = [
+            PendingAttachment(
+                name: "photo.jpg",
+                mimeType: "image/jpeg",
+                base64Data: imageBase64,
+                previewJPEGData: nil
+            )
+        ]
+        let messages = [
+            ChatMessage(role: .user, text: "what is in this image?", attachments: []),
+            ChatMessage(role: .assistant, text: "Previous response", attachments: []),
+            ChatMessage(role: .user, text: "identify this", attachments: [])
+        ]
+
+        let body = try client.makeChatRequestBody(
+            modelID: "gpt-5.3-chat-latest",
+            systemInstruction: "",
+            messages: messages,
+            latestUserAttachments: attachments
+        )
+
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let payloadMessages = try XCTUnwrap(root["messages"] as? [[String: Any]])
+        let lastMessage = try XCTUnwrap(payloadMessages.last)
+        let content = try XCTUnwrap(lastMessage["content"] as? [[String: Any]])
+
+        let imagePart = try XCTUnwrap(content.first(where: { ($0["type"] as? String) == "image_url" }))
+        let imageURL = try XCTUnwrap(imagePart["image_url"] as? [String: Any])
+        let url = try XCTUnwrap(imageURL["url"] as? String)
+        XCTAssertEqual(url, "data:image/jpeg;base64,\(imageBase64)")
+
+        let encoded = String(decoding: body, as: UTF8.self)
+        XCTAssertFalse(encoded.contains("were selected but are not yet sent for ChatGPT"))
+    }
+}
+
 private actor ModelListRecorder {
     private var calls: [AIProvider: Int] = [:]
 

@@ -124,18 +124,51 @@ struct AnthropicClient: GeminiServicing {
             }
         }
 
-        if !latestUserAttachments.isEmpty {
-            let note = "Note: \(latestUserAttachments.count) attachment(s) were selected but are not yet sent for Anthropic in this app."
-            if let last = collapsed.last, last.role == "user" {
-                collapsed[collapsed.count - 1].text += "\n\n\(note)"
-            } else {
-                collapsed.append((role: "user", text: note))
-            }
-        }
-
-        return collapsed.map { pair in
+        var payloadMessages = collapsed.map { pair in
             AnthropicMessage(role: pair.role, content: [.text(pair.text)])
         }
+
+        guard !latestUserAttachments.isEmpty else {
+            return payloadMessages
+        }
+
+        let imageBlocks = latestUserAttachments.compactMap(makeImageBlock)
+        let unsupportedCount = latestUserAttachments.count - imageBlocks.count
+        let unsupportedNote: AnthropicContentBlock? = unsupportedCount > 0
+            ? .text("Note: \(unsupportedCount) attachment(s) were skipped because Anthropic currently only supports image attachments in this app.")
+            : nil
+
+        var attachmentBlocks = imageBlocks
+        if let unsupportedNote {
+            attachmentBlocks.append(unsupportedNote)
+        }
+
+        guard !attachmentBlocks.isEmpty else {
+            return payloadMessages
+        }
+
+        if let lastUserIndex = payloadMessages.lastIndex(where: { $0.role == "user" }) {
+            payloadMessages[lastUserIndex].content.append(contentsOf: attachmentBlocks)
+        } else {
+            payloadMessages.append(
+                AnthropicMessage(role: "user", content: attachmentBlocks)
+            )
+        }
+
+        return payloadMessages
+    }
+
+    private func makeImageBlock(from attachment: PendingAttachment) -> AnthropicContentBlock? {
+        guard attachment.mimeType.hasPrefix("image/"), !attachment.base64Data.isEmpty else {
+            return nil
+        }
+        return .image(
+            AnthropicImageSource(
+                type: "base64",
+                mediaType: attachment.mimeType,
+                data: attachment.base64Data
+            )
+        )
     }
 }
 
@@ -163,15 +196,17 @@ private struct AnthropicMessagesRequest: Encodable {
 
 private struct AnthropicMessage: Codable {
     let role: String
-    let content: [AnthropicContentBlock]
+    var content: [AnthropicContentBlock]
 }
 
 private enum AnthropicContentBlock: Codable {
     case text(String)
+    case image(AnthropicImageSource)
 
     enum CodingKeys: String, CodingKey {
         case type
         case text
+        case source
     }
 
     init(from decoder: Decoder) throws {
@@ -180,6 +215,12 @@ private enum AnthropicContentBlock: Codable {
         switch type {
         case "text":
             self = .text(try container.decode(String.self, forKey: .text))
+        case "image":
+            if let source = try container.decodeIfPresent(AnthropicImageSource.self, forKey: .source) {
+                self = .image(source)
+            } else {
+                self = .text("")
+            }
         default:
             self = .text("")
         }
@@ -191,7 +232,22 @@ private enum AnthropicContentBlock: Codable {
         case .text(let value):
             try container.encode("text", forKey: .type)
             try container.encode(value, forKey: .text)
+        case .image(let source):
+            try container.encode("image", forKey: .type)
+            try container.encode(source, forKey: .source)
         }
+    }
+}
+
+private struct AnthropicImageSource: Codable {
+    let type: String
+    let mediaType: String
+    let data: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case mediaType = "media_type"
+        case data
     }
 }
 

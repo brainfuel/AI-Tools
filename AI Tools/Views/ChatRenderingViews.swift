@@ -598,3 +598,61 @@ struct AttachmentPreview: View {
         }
     }
 }
+
+struct MessageAttachmentView: View {
+    let attachment: AttachmentSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if isImage, let previewData {
+#if os(macOS)
+                if let image = NSImage(data: previewData) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 260, maxHeight: 260)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    fallbackRow
+                }
+#elseif os(iOS)
+                if let image = UIImage(data: previewData) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 260, maxHeight: 260)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    fallbackRow
+                }
+#else
+                fallbackRow
+#endif
+            } else {
+                fallbackRow
+            }
+
+            Text(attachment.name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var isImage: Bool {
+        attachment.mimeType?.hasPrefix("image/") ?? false
+    }
+
+    private var previewData: Data? {
+        guard let base64 = attachment.previewBase64Data else { return nil }
+        return Data(base64Encoded: base64)
+    }
+
+    private var fallbackRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isImage ? "photo" : "doc")
+            Text("Attachment")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}

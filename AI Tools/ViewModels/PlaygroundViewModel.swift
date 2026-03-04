@@ -205,7 +205,13 @@ final class PlaygroundViewModel: ObservableObject {
         messages.append(ChatMessage(
             role: .user,
             text: text.isEmpty ? "(Attachment only)" : text,
-            attachments: attachments.map { AttachmentSummary(name: $0.name) }
+            attachments: attachments.map { attachment in
+                AttachmentSummary(
+                    name: attachment.name,
+                    mimeType: attachment.mimeType,
+                    previewBase64Data: attachment.previewJPEGData?.base64EncodedString()
+                )
+            }
         ))
         isLoading = true
         streamingText = ""
