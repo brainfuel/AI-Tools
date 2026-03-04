@@ -2,6 +2,12 @@
 
 A SwiftUI AI playground app for chatting with multiple providers from one interface, in either single-chat or side-by-side compare mode.
 
+## Download
+
+[![Latest Release](https://img.shields.io/github/v/release/brainfuel/AI-Tools?display_name=tag)](https://github.com/brainfuel/AI-Tools/releases/latest)
+
+[Download the latest macOS build](https://github.com/brainfuel/AI-Tools/releases/latest)
+
 ## Screenshots
 
 ![AI Tools app screenshot 1](docs/images/screenshot1.png)
