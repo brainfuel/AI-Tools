@@ -1,41 +1,58 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 #if os(macOS)
 import AppKit
 #elseif canImport(UIKit)
 import UIKit
 #endif
 
+private enum WorkspaceMode: String, CaseIterable, Identifiable {
+    case single
+    case compare
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .single: return "Single"
+        case .compare: return "Compare"
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var viewModel = PlaygroundViewModel()
+    @StateObject private var compareViewModel = CompareViewModel()
+    @State private var workspaceMode: WorkspaceMode = .single
     @State private var prompt = ""
+    @State private var comparePrompt = ""
     @State private var isKeyHidden = true
     @State private var historySearch = ""
     @State private var showingUsageStats = false
     @State private var showingFileImporter = false
+    @State private var showingCompareFileImporter = false
     @State private var pendingAttachments: [PendingAttachment] = []
+    @State private var comparePendingAttachments: [PendingAttachment] = []
     @FocusState private var inputFocused: Bool
+    @FocusState private var compareInputFocused: Bool
 
     var body: some View {
         NavigationSplitView {
             sidebar
         } detail: {
-            VStack(spacing: 12) {
-                configurationSection
-                Divider()
-                messagesSection
-                composerSection
-            }
-            .padding()
+            detailContent
             .navigationTitle("AI Tools")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingUsageStats = true
-                    } label: {
-                        Image(systemName: "chart.line.uptrend.xyaxis")
+                if workspaceMode == .single {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingUsageStats = true
+                        } label: {
+                            Image(systemName: "chart.line.uptrend.xyaxis")
+                        }
+                        .help("Usage Stats")
                     }
-                    .help("Usage Stats")
                 }
             }
             .sheet(isPresented: $showingUsageStats) {
@@ -52,7 +69,33 @@ struct ContentView: View {
 #endif
         .task {
             await viewModel.loadOnLaunchIfNeeded()
+            await compareViewModel.loadOnLaunchIfNeeded()
         }
+        .onChange(of: workspaceMode) { _, mode in
+            guard mode == .compare else { return }
+            compareViewModel.reloadFromStorage()
+        }
+    }
+
+    private var detailContent: some View {
+        VStack(spacing: 12) {
+            Picker("Mode", selection: $workspaceMode) {
+                ForEach(WorkspaceMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if workspaceMode == .single {
+                configurationSection
+                Divider()
+                messagesSection
+                composerSection
+            } else {
+                compareModeSection
+            }
+        }
+        .padding()
     }
 
     private var sidebar: some View {
