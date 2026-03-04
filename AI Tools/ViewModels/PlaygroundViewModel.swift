@@ -423,7 +423,7 @@ final class PlaygroundViewModel: ObservableObject {
 
     private func persistSavedConversations() {
         guard let conversationStore else {
-            errorMessage = "Unable to resolve conversation storage path."
+            errorMessage = "Unable to initialize conversation storage."
             return
         }
         let snapshot = savedConversations
@@ -433,17 +433,13 @@ final class PlaygroundViewModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
 
             do {
-                let normalized = try await conversationStore.saveConversations(snapshot)
+                let normalized = try conversationStore.saveConversations(snapshot)
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    self.savedConversations = normalized.sorted { $0.updatedAt > $1.updatedAt }
-                    self.pendingConversationSaveTask = nil
-                }
+                self.savedConversations = normalized.sorted { $0.updatedAt > $1.updatedAt }
+                self.pendingConversationSaveTask = nil
             } catch {
-                await MainActor.run {
-                    self.errorMessage = "Failed to persist conversations: \(error.localizedDescription)"
-                    self.pendingConversationSaveTask = nil
-                }
+                self.errorMessage = "Failed to persist conversations: \(error.localizedDescription)"
+                self.pendingConversationSaveTask = nil
             }
         }
     }
