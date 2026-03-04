@@ -30,6 +30,22 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+extension AIProvider {
+    static func inferredProvider(for modelID: String) -> AIProvider {
+        let value = modelID.lowercased()
+
+        if value.hasPrefix("gpt-") || value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4") || value.hasPrefix("dall-e") || value.hasPrefix("chatgpt-") {
+            return .chatGPT
+        }
+
+        if value.hasPrefix("claude") {
+            return .anthropic
+        }
+
+        return .gemini
+    }
+}
+
 enum MessageRole: String, Codable {
     case user
     case assistant
