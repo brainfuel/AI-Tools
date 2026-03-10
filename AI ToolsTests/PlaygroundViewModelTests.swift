@@ -303,6 +303,37 @@ final class PlaygroundViewModelTests: XCTestCase {
         XCTAssertEqual(windows[0].estimatedCost, 0.00056, accuracy: 0.0000001)
     }
 
+    func testImportConversationSelectsAndPersistsImportedThread() async {
+        let recorder = ModelListRecorder()
+        let viewModel = makeViewModel(modelMap: [:], recorder: recorder)
+        let imported = SavedConversation(
+            id: UUID(),
+            provider: .anthropic,
+            title: "Imported Compare",
+            updatedAt: Date().addingTimeInterval(-3600),
+            modelID: "claude-sonnet-4-6",
+            messages: [
+                ChatMessage(role: .user, text: "Explain this", attachments: []),
+                ChatMessage(
+                    role: .assistant,
+                    text: "Here is the answer.",
+                    attachments: [],
+                    inputTokens: 120,
+                    outputTokens: 240,
+                    modelID: "claude-sonnet-4-6"
+                )
+            ]
+        )
+
+        viewModel.importConversation(imported)
+
+        XCTAssertEqual(viewModel.selectedConversationID, imported.id)
+        XCTAssertEqual(viewModel.selectedProvider, .anthropic)
+        XCTAssertEqual(viewModel.modelID, "claude-sonnet-4-6")
+        XCTAssertEqual(viewModel.messages.count, 2)
+        XCTAssertEqual(viewModel.savedConversations.first?.id, imported.id)
+    }
+
     private func makeViewModel(
         modelMap: [AIProvider: [String]],
         recorder: ModelListRecorder,

@@ -169,6 +169,29 @@ final class PlaygroundViewModel: ObservableObject {
         persistSavedConversations()
     }
 
+    func importConversation(_ conversation: SavedConversation) {
+        var imported = conversation
+        imported.updatedAt = Date()
+
+        if let existingIndex = savedConversations.firstIndex(where: { $0.id == imported.id }) {
+            savedConversations[existingIndex] = imported
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                savedConversations.insert(imported, at: 0)
+            }
+        }
+
+        savedConversations.sort { $0.updatedAt > $1.updatedAt }
+        selectedConversationID = imported.id
+        selectedProvider = imported.provider
+        providerStore = imported.provider.rawValue
+        modelID = imported.modelID
+        availableModels = cachedModels(for: imported.provider, including: imported.modelID)
+        messages = imported.messages
+        errorMessage = nil
+        persistSavedConversations()
+    }
+
     func filteredConversations(query: String) -> [SavedConversation] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return savedConversations }
