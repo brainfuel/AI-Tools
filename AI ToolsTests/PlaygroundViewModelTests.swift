@@ -399,6 +399,57 @@ final class OpenAIClientAttachmentEncodingTests: XCTestCase {
     }
 }
 
+final class GrokClientAttachmentEncodingTests: XCTestCase {
+    func testMakeChatRequestBodyEncodesSupportedImageAndDetail() throws {
+        let client = GrokClient(apiKey: "test-key")
+        let pngBase64 = Data([0x0A, 0x0B, 0x0C]).base64EncodedString()
+        let heicBase64 = Data([0x01, 0x02, 0x03]).base64EncodedString()
+        let attachments = [
+            PendingAttachment(
+                name: "one.png",
+                mimeType: "image/png",
+                base64Data: pngBase64,
+                previewJPEGData: nil
+            ),
+            PendingAttachment(
+                name: "two.heic",
+                mimeType: "image/heic",
+                base64Data: heicBase64,
+                previewJPEGData: nil
+            )
+        ]
+        let messages = [
+            ChatMessage(role: .user, text: "what is this", attachments: [])
+        ]
+
+        let body = try client.makeChatRequestBody(
+            modelID: "grok-3-mini",
+            systemInstruction: "",
+            messages: messages,
+            latestUserAttachments: attachments
+        )
+
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let payloadMessages = try XCTUnwrap(root["messages"] as? [[String: Any]])
+        let lastMessage = try XCTUnwrap(payloadMessages.last)
+        let content = try XCTUnwrap(lastMessage["content"] as? [[String: Any]])
+
+        let imageParts = content.filter { ($0["type"] as? String) == "image_url" }
+        XCTAssertEqual(imageParts.count, 1)
+
+        let imagePart = try XCTUnwrap(imageParts.first)
+        let imageURLPayload = try XCTUnwrap(imagePart["image_url"] as? [String: Any])
+        XCTAssertEqual(imageURLPayload["url"] as? String, "data:image/png;base64,\(pngBase64)")
+        XCTAssertEqual(imageURLPayload["detail"] as? String, "high")
+
+        let noteText = content
+            .filter { ($0["type"] as? String) == "text" }
+            .compactMap { $0["text"] as? String }
+            .last
+        XCTAssertEqual(noteText, "Note: 1 non-image attachment(s) were skipped for Grok in this app.")
+    }
+}
+
 private actor ModelListRecorder {
     private var calls: [AIProvider: Int] = [:]
 
