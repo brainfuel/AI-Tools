@@ -14,16 +14,6 @@ struct UsageTimeWindowSummary: Identifiable {
 @MainActor
 final class PlaygroundViewModel: ObservableObject {
     @AppStorage("ai_provider") private var providerStore = AIProvider.gemini.rawValue
-
-    @AppStorage("gemini_model_id") private var geminiModelID = "gemini-2.5-flash"
-    @AppStorage("openai_model_id") private var openAIModelID = "gpt-4.1-mini"
-    @AppStorage("anthropic_model_id") private var anthropicModelID = "claude-3-5-sonnet-latest"
-    @AppStorage("grok_model_id") private var grokModelID = "grok-3-mini"
-    @AppStorage("gemini_models_cache_v1") private var geminiModelsCache = ""
-    @AppStorage("openai_models_cache_v1") private var openAIModelsCache = ""
-    @AppStorage("anthropic_models_cache_v1") private var anthropicModelsCache = ""
-    @AppStorage("grok_models_cache_v1") private var grokModelsCache = ""
-
     @AppStorage("gemini_system_instruction") var systemInstruction = ""
 
     @Published var messages: [ChatMessage] = []
@@ -37,76 +27,72 @@ final class PlaygroundViewModel: ObservableObject {
     @Published var selectedConversationID: UUID?
     @Published var pendingAttachments: [PendingAttachment] = []
 
+    private let apiKeyManager: APIKeyManager
+    private let modelService: ModelService
     private let serviceFactory: (AIProvider, String) -> GeminiServicing
-    private let keychainStore: KeychainStore
     private let conversationStore: ConversationStore?
     private let nowProvider: () -> Date
     private var didAutoLoadModels = false
-    private var apiKeysByProvider: [AIProvider: String] = [:]
-    private var availableModelsByProvider: [AIProvider: [String]] = [:]
-    private var pendingAPIKeyPersistTasks: [AIProvider: Task<Void, Never>] = [:]
     private var pendingConversationSaveTask: Task<Void, Never>?
 
     init(
+        apiKeyManager: APIKeyManager? = nil,
+        modelService: ModelService? = nil,
         serviceFactory: @escaping (AIProvider, String) -> GeminiServicing = { provider, key in
             switch provider {
-            case .gemini:
-                return GeminiClient(apiKey: key)
-            case .chatGPT:
-                return OpenAIClient(apiKey: key)
-            case .anthropic:
-                return AnthropicClient(apiKey: key)
-            case .grok:
-                return GrokClient(apiKey: key)
+            case .gemini:    return GeminiClient(apiKey: key)
+            case .chatGPT:   return OpenAIClient(apiKey: key)
+            case .anthropic: return AnthropicClient(apiKey: key)
+            case .grok:      return GrokClient(apiKey: key)
             }
         },
-        keychainStore: KeychainStore = KeychainStore(),
         conversationStoreFactory: (() -> ConversationStore?)? = nil,
         nowProvider: @escaping () -> Date = Date.init
-        ) {
+    ) {
+        let resolvedAPIKeyManager = apiKeyManager ?? APIKeyManager()
+        let resolvedModelService = modelService ?? ModelService()
+
+        self.apiKeyManager = resolvedAPIKeyManager
+        self.modelService = resolvedModelService
         self.serviceFactory = serviceFactory
-        self.keychainStore = keychainStore
         self.nowProvider = nowProvider
+
         if let conversationStoreFactory {
             self.conversationStore = conversationStoreFactory()
-        } else if let mediaStoreDirectoryURL = Self.makeMediaStoreDirectoryURL() {
-            self.conversationStore = ConversationStore(
-                mediaStoreDirectoryURL: mediaStoreDirectoryURL
-            )
+        } else if let mediaURL = Self.makeMediaStoreDirectoryURL() {
+            self.conversationStore = ConversationStore(mediaStoreDirectoryURL: mediaURL)
         } else {
             self.conversationStore = nil
         }
-        loadAPIKeysFromSecureStorage()
-        loadModelCachesFromStorage()
+
+        resolvedAPIKeyManager.loadFromSecureStorage()
+        resolvedAPIKeyManager.onPersistError = { [weak self] message in
+            self?.errorMessage = message
+        }
+
         let provider = AIProvider(rawValue: providerStore) ?? .gemini
         selectedProvider = provider
-        modelID = providerModelID(provider)
-        availableModels = cachedModels(for: provider, including: modelID)
+        modelID = resolvedModelService.selectedModelID(for: provider)
+        availableModels = resolvedModelService.availableModels(for: provider, including: modelID)
+
         Task { [weak self] in
             await self?.loadSavedConversations()
         }
     }
 
-    var providerAPIKeyPlaceholder: String {
-        selectedProvider.apiKeyPlaceholder
+    deinit {
+        pendingConversationSaveTask?.cancel()
     }
 
-    var currentAPIKey: String {
-        apiKeysByProvider[selectedProvider] ?? ""
-    }
+    // MARK: - Public interface
 
-    var canSendRequests: Bool {
-        selectedProvider.isImplemented
-    }
-
-    var canLoadModels: Bool {
-        supportsModelLoading(selectedProvider)
-    }
+    var providerAPIKeyPlaceholder: String { selectedProvider.apiKeyPlaceholder }
+    var currentAPIKey: String { apiKeyManager.key(for: selectedProvider) }
+    var canSendRequests: Bool { selectedProvider.isImplemented }
+    var canLoadModels: Bool { selectedProvider.isImplemented }
 
     func updateCurrentAPIKey(_ value: String) {
-        let provider = selectedProvider
-        apiKeysByProvider[provider] = value
-        queueAPIKeyPersist(value, for: provider)
+        apiKeyManager.updateKey(value, for: selectedProvider)
     }
 
     func loadOnLaunchIfNeeded() async {
@@ -118,16 +104,14 @@ final class PlaygroundViewModel: ObservableObject {
     func selectProvider(_ provider: AIProvider) async {
         selectedProvider = provider
         providerStore = provider.rawValue
-        modelID = providerModelID(provider)
-        availableModels = cachedModels(for: provider, including: modelID)
+        modelID = modelService.selectedModelID(for: provider)
+        availableModels = modelService.availableModels(for: provider, including: modelID)
         errorMessage = nil
     }
 
     func selectModel(_ model: String) {
-        if modelID != model {
-            modelID = model
-        }
-        persistCurrentModelID()
+        if modelID != model { modelID = model }
+        modelService.selectModel(model, for: selectedProvider)
     }
 
     func clearMessages() {
@@ -151,11 +135,11 @@ final class PlaygroundViewModel: ObservableObject {
             errorMessage = nil
             return
         }
-
         selectedProvider = conversation.provider
         providerStore = conversation.provider.rawValue
         modelID = conversation.modelID
-        availableModels = cachedModels(for: conversation.provider, including: conversation.modelID)
+        // Insert the conversation's model into the picker without persisting it as the new default.
+        availableModels = modelService.availableModels(for: conversation.provider, including: conversation.modelID)
         messages = conversation.messages
         errorMessage = nil
     }
@@ -187,7 +171,7 @@ final class PlaygroundViewModel: ObservableObject {
         selectedProvider = imported.provider
         providerStore = imported.provider.rawValue
         modelID = imported.modelID
-        availableModels = cachedModels(for: imported.provider, including: imported.modelID)
+        availableModels = modelService.availableModels(for: imported.provider, including: imported.modelID)
         messages = imported.messages
         errorMessage = nil
         persistSavedConversations()
@@ -196,9 +180,7 @@ final class PlaygroundViewModel: ObservableObject {
     func filteredConversations(query: String) -> [SavedConversation] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return savedConversations }
-        return savedConversations.filter { conversation in
-            conversation.searchBlob.localizedCaseInsensitiveContains(needle)
-        }
+        return savedConversations.filter { $0.searchBlob.localizedCaseInsensitiveContains(needle) }
     }
 
     func removeAttachment(id: UUID) {
@@ -226,12 +208,10 @@ final class PlaygroundViewModel: ObservableObject {
             errorMessage = "Model loading is not available for this provider."
             return
         }
-
         guard !currentAPIKey.isEmpty else {
             errorMessage = "Missing API key."
             return
         }
-
         await fetchModels(for: selectedProvider, reportErrorsForSelectedProvider: true)
     }
 
@@ -255,12 +235,9 @@ final class PlaygroundViewModel: ObservableObject {
         messages.append(ChatMessage(
             role: .user,
             text: text.isEmpty ? "(Attachment only)" : text,
-            attachments: attachments.map { attachment in
-                AttachmentSummary(
-                    name: attachment.name,
-                    mimeType: attachment.mimeType,
-                    previewBase64Data: attachment.previewJPEGData?.base64EncodedString()
-                )
+            attachments: attachments.map {
+                AttachmentSummary(name: $0.name, mimeType: $0.mimeType,
+                                  previewBase64Data: $0.previewJPEGData?.base64EncodedString())
             }
         ))
         isLoading = true
@@ -270,7 +247,7 @@ final class PlaygroundViewModel: ObservableObject {
             streamingText = ""
         }
 
-        var accumulatedText = ""
+        var chunks: [String] = []
         var accumulatedMedia: [GeneratedMedia] = []
         var inputTokens = 0
         var outputTokens = 0
@@ -283,19 +260,14 @@ final class PlaygroundViewModel: ObservableObject {
                 latestUserAttachments: attachments
             )
             for try await chunk in stream {
-                accumulatedText += chunk.text
+                chunks.append(chunk.text)
                 accumulatedMedia += chunk.generatedMedia
                 if chunk.inputTokens > 0 { inputTokens = chunk.inputTokens }
                 if chunk.outputTokens > 0 { outputTokens = chunk.outputTokens }
-                streamingText = accumulatedText
+                streamingText = chunks.joined()
             }
-            let persistedMedia: [GeneratedMedia]
-            if let conversationStore {
-                persistedMedia = conversationStore.normalizeMedia(accumulatedMedia)
-            } else {
-                persistedMedia = accumulatedMedia
-            }
-            let snapshotModelID = modelID
+            let accumulatedText = chunks.joined()
+            let persistedMedia = conversationStore?.normalizeMedia(accumulatedMedia) ?? accumulatedMedia
             messages.append(ChatMessage(
                 role: .assistant,
                 text: accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -303,7 +275,7 @@ final class PlaygroundViewModel: ObservableObject {
                 generatedMedia: persistedMedia,
                 inputTokens: inputTokens,
                 outputTokens: outputTokens,
-                modelID: snapshotModelID
+                modelID: modelID
             ))
             upsertCurrentConversation()
         } catch {
@@ -323,121 +295,39 @@ final class PlaygroundViewModel: ObservableObject {
         let now = nowProvider()
         let conversations = conversationsSnapshotForUsage(at: now)
         return [
-            usageSummary(
-                label: "24h",
-                since: now.addingTimeInterval(-24 * 60 * 60),
-                now: now,
-                conversations: conversations
-            ),
-            usageSummary(
-                label: "7d",
-                since: now.addingTimeInterval(-7 * 24 * 60 * 60),
-                now: now,
-                conversations: conversations
-            ),
-            usageSummary(
-                label: "30d",
-                since: now.addingTimeInterval(-30 * 24 * 60 * 60),
-                now: now,
-                conversations: conversations
-            )
+            usageSummary(label: "24h", since: now.addingTimeInterval(-24 * 60 * 60),        now: now, conversations: conversations),
+            usageSummary(label: "7d",  since: now.addingTimeInterval(-7 * 24 * 60 * 60),   now: now, conversations: conversations),
+            usageSummary(label: "30d", since: now.addingTimeInterval(-30 * 24 * 60 * 60),  now: now, conversations: conversations),
         ]
     }
 
+    // MARK: - Private: model fetching
+
     private func prefetchModelsOnLaunch() async {
-        for provider in AIProvider.allCases where supportsModelLoading(provider) {
-            guard !(apiKeysByProvider[provider] ?? "").isEmpty else { continue }
+        for provider in AIProvider.allCases where provider.isImplemented {
+            guard !apiKeyManager.key(for: provider).isEmpty else { continue }
             await fetchModels(for: provider, reportErrorsForSelectedProvider: provider == selectedProvider)
         }
     }
 
-    private func loadAPIKeysFromSecureStorage() {
-        for provider in AIProvider.allCases {
-            let account = keychainAccount(for: provider)
-
-            if let secureValue = try? keychainStore.string(for: account),
-               !secureValue.isEmpty {
-                apiKeysByProvider[provider] = secureValue
-            } else {
-                apiKeysByProvider[provider] = ""
+    private func fetchModels(for provider: AIProvider, reportErrorsForSelectedProvider: Bool) async {
+        let apiKey = apiKeyManager.key(for: provider)
+        guard !apiKey.isEmpty else { return }
+        do {
+            let fetched = try await serviceFactory(provider, apiKey).listGenerateContentModels()
+            modelService.updateCache(fetched, for: provider)
+            if provider == selectedProvider {
+                modelID = modelService.selectedModelID(for: provider)
+                availableModels = modelService.availableModels(for: provider, including: modelID)
+            }
+        } catch {
+            if reportErrorsForSelectedProvider && provider == selectedProvider {
+                errorMessage = error.localizedDescription
             }
         }
     }
 
-    private func queueAPIKeyPersist(_ value: String, for provider: AIProvider) {
-        pendingAPIKeyPersistTasks[provider]?.cancel()
-        pendingAPIKeyPersistTasks[provider] = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard let self, !Task.isCancelled else { return }
-            self.persistAPIKey(value, for: provider)
-            self.pendingAPIKeyPersistTasks[provider] = nil
-        }
-    }
-
-    private func persistAPIKey(_ value: String, for provider: AIProvider) {
-        do {
-            if value.isEmpty {
-                try keychainStore.removeValue(for: keychainAccount(for: provider))
-            } else {
-                try keychainStore.setString(value, for: keychainAccount(for: provider))
-            }
-        } catch {
-            errorMessage = "Failed to persist \(provider.displayName) API key to Keychain: \(error.localizedDescription)"
-        }
-    }
-
-    private func keychainAccount(for provider: AIProvider) -> String {
-        "api-key.\(provider.rawValue)"
-    }
-
-    private static func makeMediaStoreDirectoryURL() -> URL? {
-        do {
-            let fileManager = FileManager.default
-            let appSupport = try fileManager.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let mediaFolder = appSupport
-                .appendingPathComponent("AI Tools", isDirectory: true)
-                .appendingPathComponent("media", isDirectory: true)
-            try fileManager.createDirectory(at: mediaFolder, withIntermediateDirectories: true)
-            return mediaFolder
-        } catch {
-            return nil
-        }
-    }
-
-    private func persistCurrentModelID() {
-        persistModelID(modelID, for: selectedProvider)
-    }
-
-    private func persistModelID(_ modelID: String, for provider: AIProvider) {
-        switch provider {
-        case .gemini:
-            geminiModelID = modelID
-        case .chatGPT:
-            openAIModelID = modelID
-        case .anthropic:
-            anthropicModelID = modelID
-        case .grok:
-            grokModelID = modelID
-        }
-    }
-
-    private func providerModelID(_ provider: AIProvider) -> String {
-        switch provider {
-        case .gemini:
-            return geminiModelID
-        case .chatGPT:
-            return openAIModelID
-        case .anthropic:
-            return anthropicModelID
-        case .grok:
-            return grokModelID
-        }
-    }
+    // MARK: - Private: conversation persistence
 
     private func upsertCurrentConversation() {
         guard !messages.isEmpty else { return }
@@ -445,7 +335,6 @@ final class PlaygroundViewModel: ObservableObject {
             updateConversation(id: id)
             return
         }
-
         let conversation = SavedConversation(
             id: UUID(),
             provider: selectedProvider,
@@ -473,79 +362,10 @@ final class PlaygroundViewModel: ObservableObject {
     }
 
     private func inferredConversationTitle(fallback: String = "Untitled Chat") -> String {
-        guard let firstUserText = messages.first(where: { $0.role == .user })?.text else {
-            return fallback
-        }
-        let cleaned = firstUserText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let text = messages.first(where: { $0.role == .user })?.text else { return fallback }
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return fallback }
         return String(cleaned.prefix(48))
-    }
-
-    private func conversationsSnapshotForUsage(at now: Date) -> [SavedConversation] {
-        var snapshot = savedConversations
-        guard !messages.isEmpty else { return snapshot }
-
-        if let selectedConversationID,
-           let index = snapshot.firstIndex(where: { $0.id == selectedConversationID }) {
-            snapshot[index].provider = selectedProvider
-            snapshot[index].modelID = modelID
-            snapshot[index].updatedAt = now
-            snapshot[index].messages = messages
-            return snapshot
-        }
-
-        snapshot.insert(
-            SavedConversation(
-                id: selectedConversationID ?? UUID(),
-                provider: selectedProvider,
-                title: inferredConversationTitle(),
-                updatedAt: now,
-                modelID: modelID,
-                messages: messages
-            ),
-            at: 0
-        )
-        return snapshot
-    }
-
-    private func usageSummary(
-        label: String,
-        since: Date,
-        now: Date,
-        conversations: [SavedConversation]
-    ) -> UsageTimeWindowSummary {
-        var inputTokens = 0
-        var outputTokens = 0
-        var estimatedCost = 0.0
-
-        for conversation in conversations {
-            for message in conversation.messages where message.role == .assistant {
-                let timestamp = message.createdAt ?? conversation.updatedAt
-                guard timestamp >= since && timestamp <= now else { continue }
-
-                let input = max(0, message.inputTokens)
-                let output = max(0, message.outputTokens)
-                inputTokens += input
-                outputTokens += output
-
-                let messageModel = message.modelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let effectiveModelID = messageModel.isEmpty ? conversation.modelID : messageModel
-                if let messageCost = TokenCostCalculator.cost(
-                    for: effectiveModelID,
-                    inputTokens: input,
-                    outputTokens: output
-                ) {
-                    estimatedCost += messageCost
-                }
-            }
-        }
-
-        return UsageTimeWindowSummary(
-            label: label,
-            inputTokens: inputTokens,
-            outputTokens: outputTokens,
-            estimatedCost: estimatedCost
-        )
     }
 
     private func loadSavedConversations() async {
@@ -572,7 +392,6 @@ final class PlaygroundViewModel: ObservableObject {
         pendingConversationSaveTask = Task { [weak self, snapshot] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard let self, !Task.isCancelled else { return }
-
             do {
                 let normalized = try conversationStore.saveConversations(snapshot)
                 guard !Task.isCancelled else { return }
@@ -585,86 +404,76 @@ final class PlaygroundViewModel: ObservableObject {
         }
     }
 
-    private func supportsModelLoading(_ provider: AIProvider) -> Bool {
-        provider.isImplemented
+    // MARK: - Private: usage calculations
+
+    private func conversationsSnapshotForUsage(at now: Date) -> [SavedConversation] {
+        var snapshot = savedConversations
+        guard !messages.isEmpty else { return snapshot }
+
+        if let selectedConversationID,
+           let index = snapshot.firstIndex(where: { $0.id == selectedConversationID }) {
+            snapshot[index].provider = selectedProvider
+            snapshot[index].modelID = modelID
+            snapshot[index].updatedAt = now
+            snapshot[index].messages = messages
+            return snapshot
+        }
+
+        snapshot.insert(SavedConversation(
+            id: selectedConversationID ?? UUID(),
+            provider: selectedProvider,
+            title: inferredConversationTitle(),
+            updatedAt: now,
+            modelID: modelID,
+            messages: messages
+        ), at: 0)
+        return snapshot
     }
 
-    private func fetchModels(for provider: AIProvider, reportErrorsForSelectedProvider: Bool) async {
-        guard supportsModelLoading(provider) else { return }
-        guard let apiKey = apiKeysByProvider[provider], !apiKey.isEmpty else { return }
+    private func usageSummary(
+        label: String,
+        since: Date,
+        now: Date,
+        conversations: [SavedConversation]
+    ) -> UsageTimeWindowSummary {
+        var inputTokens = 0
+        var outputTokens = 0
+        var estimatedCost = 0.0
 
-        do {
-            let fetchedModels = try await serviceFactory(provider, apiKey).listGenerateContentModels()
-            updateModelCache(fetchedModels, for: provider)
-
-            let currentProviderModelID = providerModelID(provider)
-            if !fetchedModels.contains(currentProviderModelID), let first = fetchedModels.first {
-                persistModelID(first, for: provider)
-                if provider == selectedProvider {
-                    modelID = first
+        for conversation in conversations {
+            for message in conversation.messages where message.role == .assistant {
+                let timestamp = message.createdAt ?? conversation.updatedAt
+                guard timestamp >= since && timestamp <= now else { continue }
+                let input  = max(0, message.inputTokens)
+                let output = max(0, message.outputTokens)
+                inputTokens  += input
+                outputTokens += output
+                let modelForMessage = message.modelID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let effectiveModel  = modelForMessage.isEmpty ? conversation.modelID : modelForMessage
+                if let cost = TokenCostCalculator.cost(for: effectiveModel, inputTokens: input, outputTokens: output) {
+                    estimatedCost += cost
                 }
             }
+        }
+        return UsageTimeWindowSummary(label: label, inputTokens: inputTokens,
+                                      outputTokens: outputTokens, estimatedCost: estimatedCost)
+    }
 
-            if provider == selectedProvider {
-                availableModels = cachedModels(for: provider, including: modelID)
-            }
+    // MARK: - Private: storage directory
+
+    private static func makeMediaStoreDirectoryURL() -> URL? {
+        do {
+            let appSupport = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true
+            )
+            let folder = appSupport
+                .appendingPathComponent("AI Tools", isDirectory: true)
+                .appendingPathComponent("media", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            return folder
         } catch {
-            if reportErrorsForSelectedProvider && provider == selectedProvider {
-                errorMessage = error.localizedDescription
-            }
+            return nil
         }
-    }
-
-    private func loadModelCachesFromStorage() {
-        availableModelsByProvider[.gemini] = decodeModels(geminiModelsCache)
-        availableModelsByProvider[.chatGPT] = decodeModels(openAIModelsCache)
-        availableModelsByProvider[.anthropic] = decodeModels(anthropicModelsCache)
-        availableModelsByProvider[.grok] = decodeModels(grokModelsCache)
-    }
-
-    private func updateModelCache(_ models: [String], for provider: AIProvider) {
-        var seen = Set<String>()
-        let uniqueModels = models.filter { seen.insert($0).inserted }
-        availableModelsByProvider[provider] = uniqueModels
-
-        let encoded = encodeModels(uniqueModels)
-        switch provider {
-        case .gemini:
-            geminiModelsCache = encoded
-        case .chatGPT:
-            openAIModelsCache = encoded
-        case .anthropic:
-            anthropicModelsCache = encoded
-        case .grok:
-            grokModelsCache = encoded
-        }
-    }
-
-    private func cachedModels(for provider: AIProvider, including model: String? = nil) -> [String] {
-        var models = availableModelsByProvider[provider] ?? []
-        if models.isEmpty {
-            return models
-        }
-
-        if let model, !model.isEmpty, !models.contains(model) {
-            models.insert(model, at: 0)
-        }
-        return models
-    }
-
-    private func decodeModels(_ raw: String) -> [String] {
-        guard let data = raw.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String].self, from: data) else {
-            return []
-        }
-        return decoded
-    }
-
-    private func encodeModels(_ models: [String]) -> String {
-        guard let data = try? JSONEncoder().encode(models),
-              let raw = String(data: data, encoding: .utf8) else {
-            return ""
-        }
-        return raw
     }
 }

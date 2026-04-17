@@ -5,29 +5,37 @@ struct AnthropicClient: GeminiServicing {
     private let apiVersion = "2023-06-01"
 
     func listGenerateContentModels() async throws -> [String] {
-        guard let url = URL(string: "https://api.anthropic.com/v1/models") else {
-            throw GeminiError.invalidRequest
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
-        request.timeoutInterval = 25
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-        if !(200...299).contains(http.statusCode) {
-            if let apiError = try? JSONDecoder().decode(AnthropicErrorEnvelope.self, from: data) {
-                throw GeminiError.api(apiError.error.message)
+        do {
+            guard let url = URL(string: "https://api.anthropic.com/v1/models") else {
+                throw APIClientError.invalidRequest(provider: .anthropic)
             }
-            throw GeminiError.api("Model list request failed with status \(http.statusCode).")
-        }
 
-        let decoded = try JSONDecoder().decode(AnthropicModelsResponse.self, from: data)
-        return decoded.data.map(\.id)
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            request.setValue(apiVersion, forHTTPHeaderField: "anthropic-version")
+            request.timeoutInterval = 25
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .anthropic)
+            }
+            if !(200...299).contains(http.statusCode) {
+                let apiMessage = (try? JSONDecoder().decode(AnthropicErrorEnvelope.self, from: data))?.error.message
+                    ?? APIClientError.message(from: data)
+                throw APIClientError.fromHTTP(
+                    provider: .anthropic,
+                    statusCode: http.statusCode,
+                    message: apiMessage,
+                    fallbackPrefix: "Model list request failed with status"
+                )
+            }
+
+            let decoded = try JSONDecoder().decode(AnthropicModelsResponse.self, from: data)
+            return decoded.data.map(\.id)
+        } catch {
+            throw APIClientError.normalize(error, provider: .anthropic)
+        }
     }
 
     func generateReplyStream(
@@ -40,7 +48,7 @@ struct AnthropicClient: GeminiServicing {
             Task {
                 do {
                     guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
-                        throw GeminiError.invalidRequest
+                        throw APIClientError.invalidRequest(provider: .anthropic)
                     }
 
                     var request = URLRequest(url: url)
@@ -55,7 +63,11 @@ struct AnthropicClient: GeminiServicing {
                         latestUserAttachments: latestUserAttachments
                     )
                     guard !payloadMessages.isEmpty else {
-                        throw GeminiError.api("Cannot send an empty conversation to Anthropic.")
+                        throw APIClientError.api(
+                            provider: .anthropic,
+                            statusCode: nil,
+                            message: "Cannot send an empty conversation to Anthropic."
+                        )
                     }
 
                     let payload = AnthropicMessagesRequest(
@@ -68,26 +80,25 @@ struct AnthropicClient: GeminiServicing {
 
                     let (data, response) = try await URLSession.shared.data(for: request)
                     guard let http = response as? HTTPURLResponse else {
-                        throw GeminiError.invalidResponse
+                        throw APIClientError.invalidResponse(provider: .anthropic)
                     }
 
                     if !(200...299).contains(http.statusCode) {
-                        if let apiError = try? JSONDecoder().decode(AnthropicErrorEnvelope.self, from: data) {
-                            throw GeminiError.api(apiError.error.message)
-                        }
-                        if let raw = String(data: data, encoding: .utf8)?
-                            .trimmingCharacters(in: .whitespacesAndNewlines),
-                           !raw.isEmpty {
-                            throw GeminiError.api(raw)
-                        }
-                        throw GeminiError.api("Anthropic request failed with status \(http.statusCode).")
+                        let apiMessage = (try? JSONDecoder().decode(AnthropicErrorEnvelope.self, from: data))?.error.message
+                            ?? APIClientError.message(from: data)
+                        throw APIClientError.fromHTTP(
+                            provider: .anthropic,
+                            statusCode: http.statusCode,
+                            message: apiMessage,
+                            fallbackPrefix: "Anthropic request failed with status"
+                        )
                     }
 
                     let decoded = try JSONDecoder().decode(AnthropicMessagesResponse.self, from: data)
                     let responseText = decoded.content.compactMap(\.text).joined()
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     if responseText.isEmpty {
-                        throw GeminiError.emptyReply
+                        throw APIClientError.emptyReply(provider: .anthropic)
                     }
 
                     continuation.yield(
@@ -100,7 +111,7 @@ struct AnthropicClient: GeminiServicing {
                     )
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: APIClientError.normalize(error, provider: .anthropic))
                 }
             }
         }

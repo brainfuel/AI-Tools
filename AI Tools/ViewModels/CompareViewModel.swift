@@ -4,14 +4,6 @@ import Combine
 
 @MainActor
 final class CompareViewModel: ObservableObject {
-    @AppStorage("gemini_model_id") private var geminiModelID = "gemini-2.5-flash"
-    @AppStorage("openai_model_id") private var openAIModelID = "gpt-4.1-mini"
-    @AppStorage("anthropic_model_id") private var anthropicModelID = "claude-3-5-sonnet-latest"
-    @AppStorage("grok_model_id") private var grokModelID = "grok-3-mini"
-    @AppStorage("gemini_models_cache_v1") private var geminiModelsCache = ""
-    @AppStorage("openai_models_cache_v1") private var openAIModelsCache = ""
-    @AppStorage("anthropic_models_cache_v1") private var anthropicModelsCache = ""
-    @AppStorage("grok_models_cache_v1") private var grokModelsCache = ""
     @AppStorage("compare_conversations_v1") private var compareConversationsStore = ""
 
     @Published var savedConversations: [CompareConversation] = []
@@ -21,57 +13,56 @@ final class CompareViewModel: ObservableObject {
     @Published private(set) var isSending = false
     @Published var pendingAttachments: [PendingAttachment] = []
 
+    // @Published mirrors so SwiftUI redraws pickers/status icons when services update.
     @Published private var selectedModelsByProvider: [AIProvider: String] = [:]
     @Published private var availableModelsByProvider: [AIProvider: [String]] = [:]
     @Published private var apiKeysByProvider: [AIProvider: String] = [:]
     @Published private var providerStatusByProvider: [AIProvider: String] = [:]
+
+    private let apiKeyManager: APIKeyManager
+    private let modelService: ModelService
+    private let serviceFactory: (AIProvider, String) -> GeminiServicing
     private var didAutoLoadModels = false
 
-    private let serviceFactory: (AIProvider, String) -> GeminiServicing
-    private let keychainStore: KeychainStore
-
     init(
+        apiKeyManager: APIKeyManager? = nil,
+        modelService: ModelService? = nil,
         serviceFactory: @escaping (AIProvider, String) -> GeminiServicing = { provider, key in
             switch provider {
-            case .gemini:
-                return GeminiClient(apiKey: key)
-            case .chatGPT:
-                return OpenAIClient(apiKey: key)
-            case .anthropic:
-                return AnthropicClient(apiKey: key)
-            case .grok:
-                return GrokClient(apiKey: key)
+            case .gemini:    return GeminiClient(apiKey: key)
+            case .chatGPT:   return OpenAIClient(apiKey: key)
+            case .anthropic: return AnthropicClient(apiKey: key)
+            case .grok:      return GrokClient(apiKey: key)
             }
-        },
-        keychainStore: KeychainStore = KeychainStore()
+        }
     ) {
+        let resolvedAPIKeyManager = apiKeyManager ?? APIKeyManager()
+        let resolvedModelService = modelService ?? ModelService()
+
+        self.apiKeyManager = resolvedAPIKeyManager
+        self.modelService = resolvedModelService
         self.serviceFactory = serviceFactory
-        self.keychainStore = keychainStore
         loadSavedConversations()
         reloadFromStorage(includeSecureStorage: true)
     }
 
+    // MARK: - Public interface
+
     var composerStatusLabel: String {
         let ready = readyProviders
-        if ready.isEmpty {
-            return "No providers ready. Add keys in Single mode."
-        }
-        let names = ready.map(\.displayName).joined(separator: ", ")
-        return "Ready: \(names)"
+        if ready.isEmpty { return "No providers ready. Add keys in Single mode." }
+        return "Ready: \(ready.map(\.displayName).joined(separator: ", "))"
     }
 
     var readyProviders: [AIProvider] {
-        AIProvider.allCases.filter { provider in
-            hasAPIKey(for: provider) && !selectedModel(for: provider).isEmpty
-        }
+        AIProvider.allCases.filter { hasAPIKey(for: $0) && !selectedModel(for: $0).isEmpty }
     }
 
     var runsChronological: [CompareRun] {
         runs.sorted { lhs, rhs in
-            if lhs.createdAt == rhs.createdAt {
-                return lhs.id.uuidString < rhs.id.uuidString
-            }
-            return lhs.createdAt < rhs.createdAt
+            lhs.createdAt == rhs.createdAt
+                ? lhs.id.uuidString < rhs.id.uuidString
+                : lhs.createdAt < rhs.createdAt
         }
     }
 
@@ -86,10 +77,11 @@ final class CompareViewModel: ObservableObject {
 
     func reloadFromStorage(includeSecureStorage: Bool = false) {
         if includeSecureStorage {
-            loadAPIKeysFromSecureStorage()
+            apiKeyManager.loadFromSecureStorage()
+            syncAPIKeys()
         }
-        loadSelectedModelsFromStorage()
-        loadModelCachesFromStorage()
+        modelService.loadCachesFromStorage()
+        syncModelMirrors()
         if let selectedConversationID {
             if let conversation = savedConversations.first(where: { $0.id == selectedConversationID }) {
                 runs = conversation.runs
@@ -107,8 +99,7 @@ final class CompareViewModel: ObservableObject {
 
     func selectConversation(_ id: UUID?) {
         selectedConversationID = id
-        guard let id,
-              let conversation = savedConversations.first(where: { $0.id == id }) else {
+        guard let id, let conversation = savedConversations.first(where: { $0.id == id }) else {
             runs.removeAll()
             errorMessage = nil
             return
@@ -130,9 +121,7 @@ final class CompareViewModel: ObservableObject {
     func filteredConversations(query: String) -> [CompareConversation] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return savedConversations }
-        return savedConversations.filter { conversation in
-            conversation.searchBlob.localizedCaseInsensitiveContains(needle)
-        }
+        return savedConversations.filter { $0.searchBlob.localizedCaseInsensitiveContains(needle) }
     }
 
     func selectedModel(for provider: AIProvider) -> String {
@@ -141,26 +130,16 @@ final class CompareViewModel: ObservableObject {
 
     func selectModel(_ model: String, for provider: AIProvider) {
         selectedModelsByProvider[provider] = model
-        persistSelectedModel(model, for: provider)
+        modelService.selectModel(model, for: provider)
     }
 
     func modelsForPicker(for provider: AIProvider) -> [String] {
-        let cached = availableModelsByProvider[provider] ?? []
-        let selected = selectedModel(for: provider)
-        guard !selected.isEmpty else { return cached }
-        if cached.contains(selected) {
-            return cached
-        }
-        return [selected] + cached
+        availableModelsByProvider[provider] ?? []
     }
 
     func providerStatusMessage(_ provider: AIProvider) -> String? {
-        if let status = providerStatusByProvider[provider], !status.isEmpty {
-            return status
-        }
-        if !hasAPIKey(for: provider) {
-            return "Set \(provider.displayName) API key in Single mode."
-        }
+        if let status = providerStatusByProvider[provider], !status.isEmpty { return status }
+        if !hasAPIKey(for: provider) { return "Set \(provider.displayName) API key in Single mode." }
         return nil
     }
 
@@ -182,25 +161,18 @@ final class CompareViewModel: ObservableObject {
         let fallbackModel = runs
             .sorted { $0.createdAt < $1.createdAt }
             .compactMap { run -> String? in
-                guard let result = run.results[provider] else { return nil }
-                let model = result.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !model.isEmpty else { return nil }
-                return model
+                let model = run.results[provider]?.modelID.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return model.isEmpty ? nil : model
             }
             .last
         let modelID = !selected.isEmpty ? selected : (fallbackModel ?? "")
-        guard !modelID.isEmpty else {
-            return nil
-        }
+        guard !modelID.isEmpty else { return nil }
 
         let titleSeed = messages.first(where: { $0.role == .user })?.text ?? "\(provider.displayName) Thread"
         return SavedConversation(
-            id: UUID(),
-            provider: provider,
+            id: UUID(), provider: provider,
             title: makeTitle(from: titleSeed),
-            updatedAt: Date(),
-            modelID: modelID,
-            messages: messages
+            updatedAt: Date(), modelID: modelID, messages: messages
         )
     }
 
@@ -243,66 +215,62 @@ final class CompareViewModel: ObservableObject {
         }
 
         let prompt = normalizedText.isEmpty ? "(Attachment only)" : normalizedText
-        let summaries = attachments.map { attachment in
-            AttachmentSummary(
-                name: attachment.name,
-                mimeType: attachment.mimeType,
-                previewBase64Data: attachment.previewJPEGData?.base64EncodedString()
-            )
+        let summaries = attachments.map {
+            AttachmentSummary(name: $0.name, mimeType: $0.mimeType,
+                              previewBase64Data: $0.previewJPEGData?.base64EncodedString())
         }
 
         var initialResults: [AIProvider: CompareProviderResult] = [:]
         for provider in AIProvider.allCases {
             if providers.contains(provider) {
                 initialResults[provider] = CompareProviderResult(
-                    state: .loading,
-                    modelID: selectedModel(for: provider),
-                    text: "",
-                    generatedMedia: [],
-                    inputTokens: 0,
-                    outputTokens: 0,
-                    errorMessage: nil
+                    state: .loading, modelID: selectedModel(for: provider),
+                    text: "", generatedMedia: [], inputTokens: 0, outputTokens: 0, errorMessage: nil
                 )
             } else {
-                let skippedReason = hasAPIKey(for: provider)
-                    ? "No model selected."
-                    : "Missing API key."
+                let reason = hasAPIKey(for: provider) ? "No model selected." : "Missing API key."
                 initialResults[provider] = CompareProviderResult(
-                    state: .skipped,
-                    modelID: selectedModel(for: provider),
-                    text: "",
-                    generatedMedia: [],
-                    inputTokens: 0,
-                    outputTokens: 0,
-                    errorMessage: skippedReason
+                    state: .skipped, modelID: selectedModel(for: provider),
+                    text: "", generatedMedia: [], inputTokens: 0, outputTokens: 0, errorMessage: reason
                 )
             }
         }
 
-        let run = CompareRun(
-            id: UUID(),
-            prompt: prompt,
-            attachments: summaries,
-            createdAt: Date(),
-            results: initialResults
-        )
+        let run = CompareRun(id: UUID(), prompt: prompt, attachments: summaries,
+                             createdAt: Date(), results: initialResults)
         runs.insert(run, at: 0)
         upsertCurrentConversation()
 
         let runID = run.id
         isSending = true
-
-        let tasks = providers.map { provider in
-            Task { [weak self] in
-                await self?.executeRun(for: provider, runID: runID, prompt: prompt, attachments: attachments)
+        await withTaskGroup(of: Void.self) { group in
+            for provider in providers {
+                group.addTask { [weak self] in
+                    await self?.executeRun(for: provider, runID: runID, prompt: prompt, attachments: attachments)
+                }
             }
         }
-        for task in tasks {
-            await task.value
-        }
-
         isSending = false
         upsertCurrentConversation()
+    }
+
+    // MARK: - Private: model fetching
+
+    private func fetchModels(for provider: AIProvider, reportErrors: Bool) async {
+        let apiKey = apiKeysByProvider[provider] ?? ""
+        guard !apiKey.isEmpty else {
+            if reportErrors { providerStatusByProvider[provider] = "Missing API key." }
+            return
+        }
+        do {
+            let models = try await serviceFactory(provider, apiKey).listGenerateContentModels()
+            let unique = modelService.updateCache(models, for: provider)
+            availableModelsByProvider[provider] = modelsForPickerFromService(for: provider)
+            selectedModelsByProvider[provider] = modelService.selectedModelID(for: provider)
+            providerStatusByProvider[provider] = unique.isEmpty ? "No models returned." : "Loaded \(unique.count) model(s)."
+        } catch {
+            if reportErrors { providerStatusByProvider[provider] = error.localizedDescription }
+        }
     }
 
     private func executeRun(
@@ -314,7 +282,7 @@ final class CompareViewModel: ObservableObject {
         let apiKey = apiKeysByProvider[provider] ?? ""
         let model = selectedModel(for: provider)
 
-        var accumulatedText = ""
+        var chunks: [String] = []
         var accumulatedMedia: [GeneratedMedia] = []
         var inputTokens = 0
         var outputTokens = 0
@@ -329,247 +297,110 @@ final class CompareViewModel: ObservableObject {
                 }
             }
             messages.append(ChatMessage(
-                role: .user,
-                text: prompt,
+                role: .user, text: prompt,
                 attachments: attachments.map {
-                    AttachmentSummary(
-                        name: $0.name,
-                        mimeType: $0.mimeType,
-                        previewBase64Data: $0.previewJPEGData?.base64EncodedString()
-                    )
+                    AttachmentSummary(name: $0.name, mimeType: $0.mimeType,
+                                     previewBase64Data: $0.previewJPEGData?.base64EncodedString())
                 }
             ))
 
             let stream = serviceFactory(provider, apiKey).generateReplyStream(
-                modelID: model,
-                systemInstruction: "",
-                messages: messages,
-                latestUserAttachments: attachments
+                modelID: model, systemInstruction: "",
+                messages: messages, latestUserAttachments: attachments
             )
-
             for try await chunk in stream {
-                accumulatedText += chunk.text
+                chunks.append(chunk.text)
                 accumulatedMedia += chunk.generatedMedia
                 if chunk.inputTokens > 0 { inputTokens = chunk.inputTokens }
                 if chunk.outputTokens > 0 { outputTokens = chunk.outputTokens }
-
-                updateRun(
-                    runID: runID,
-                    provider: provider,
-                    result: CompareProviderResult(
-                        state: .loading,
-                        modelID: model,
-                        text: accumulatedText,
-                        generatedMedia: accumulatedMedia,
-                        inputTokens: inputTokens,
-                        outputTokens: outputTokens,
-                        errorMessage: nil
-                    )
-                )
+                updateRun(runID: runID, provider: provider, result: CompareProviderResult(
+                    state: .loading, modelID: model, text: chunks.joined(),
+                    generatedMedia: accumulatedMedia, inputTokens: inputTokens,
+                    outputTokens: outputTokens, errorMessage: nil
+                ))
             }
-
-            updateRun(
-                runID: runID,
-                provider: provider,
-                result: CompareProviderResult(
-                    state: .success,
-                    modelID: model,
-                    text: accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines),
-                    generatedMedia: accumulatedMedia,
-                    inputTokens: inputTokens,
-                    outputTokens: outputTokens,
-                    errorMessage: nil
-                )
-            )
+            updateRun(runID: runID, provider: provider, result: CompareProviderResult(
+                state: .success, modelID: model,
+                text: chunks.joined().trimmingCharacters(in: .whitespacesAndNewlines),
+                generatedMedia: accumulatedMedia, inputTokens: inputTokens,
+                outputTokens: outputTokens, errorMessage: nil
+            ))
         } catch {
-            updateRun(
-                runID: runID,
-                provider: provider,
-                result: CompareProviderResult(
-                    state: .failed,
-                    modelID: model,
-                    text: "",
-                    generatedMedia: [],
-                    inputTokens: 0,
-                    outputTokens: 0,
-                    errorMessage: error.localizedDescription
-                )
-            )
+            updateRun(runID: runID, provider: provider, result: CompareProviderResult(
+                state: .failed, modelID: model, text: "", generatedMedia: [],
+                inputTokens: 0, outputTokens: 0, errorMessage: error.localizedDescription
+            ))
         }
     }
 
-    private func updateRun(
-        runID: UUID,
-        provider: AIProvider,
-        result: CompareProviderResult
-    ) {
-        guard let runIndex = runs.firstIndex(where: { $0.id == runID }) else { return }
-        var run = runs[runIndex]
+    private func updateRun(runID: UUID, provider: AIProvider, result: CompareProviderResult) {
+        guard let index = runs.firstIndex(where: { $0.id == runID }) else { return }
+        var run = runs[index]
         run.results[provider] = result
-        runs[runIndex] = run
+        runs[index] = run
     }
 
-    private func fetchModels(for provider: AIProvider, reportErrors: Bool) async {
-        let apiKey = apiKeysByProvider[provider] ?? ""
-        guard !apiKey.isEmpty else {
-            if reportErrors {
-                providerStatusByProvider[provider] = "Missing API key."
-            }
-            return
-        }
+    // MARK: - Private: service mirror sync
 
-        do {
-            let models = try await serviceFactory(provider, apiKey).listGenerateContentModels()
-            let uniqueSorted = Array(Set(models)).sorted()
-            availableModelsByProvider[provider] = uniqueSorted
-            persistModelCache(uniqueSorted, for: provider)
-
-            if !uniqueSorted.contains(selectedModel(for: provider)) {
-                if let first = uniqueSorted.first {
-                    selectModel(first, for: provider)
-                }
-            }
-
-            providerStatusByProvider[provider] = uniqueSorted.isEmpty
-                ? "No models returned."
-                : "Loaded \(uniqueSorted.count) model(s)."
-        } catch {
-            if reportErrors {
-                providerStatusByProvider[provider] = error.localizedDescription
-            }
-        }
-    }
-
-    private func loadAPIKeysFromSecureStorage() {
+    private func syncAPIKeys() {
         for provider in AIProvider.allCases {
-            let account = "api-key.\(provider.rawValue)"
-            if let secureValue = try? keychainStore.string(for: account),
-               !secureValue.isEmpty {
-                apiKeysByProvider[provider] = secureValue
-            } else {
-                apiKeysByProvider[provider] = ""
-            }
+            apiKeysByProvider[provider] = apiKeyManager.key(for: provider)
         }
     }
 
-    private func loadSelectedModelsFromStorage() {
-        selectedModelsByProvider[.gemini] = geminiModelID
-        selectedModelsByProvider[.chatGPT] = openAIModelID
-        selectedModelsByProvider[.anthropic] = anthropicModelID
-        selectedModelsByProvider[.grok] = grokModelID
-    }
-
-    private func persistSelectedModel(_ model: String, for provider: AIProvider) {
-        switch provider {
-        case .gemini:
-            geminiModelID = model
-        case .chatGPT:
-            openAIModelID = model
-        case .anthropic:
-            anthropicModelID = model
-        case .grok:
-            grokModelID = model
+    private func syncModelMirrors() {
+        for provider in AIProvider.allCases {
+            selectedModelsByProvider[provider]  = modelService.selectedModelID(for: provider)
+            availableModelsByProvider[provider] = modelsForPickerFromService(for: provider)
         }
     }
 
-    private func loadModelCachesFromStorage() {
-        availableModelsByProvider[.gemini] = decodeModelCache(geminiModelsCache)
-        availableModelsByProvider[.chatGPT] = decodeModelCache(openAIModelsCache)
-        availableModelsByProvider[.anthropic] = decodeModelCache(anthropicModelsCache)
-        availableModelsByProvider[.grok] = decodeModelCache(grokModelsCache)
+    private func modelsForPickerFromService(for provider: AIProvider) -> [String] {
+        let cached   = modelService.availableModelsByProvider[provider] ?? []
+        let selected = modelService.selectedModelID(for: provider)
+        guard !selected.isEmpty else { return cached }
+        return cached.contains(selected) ? cached : [selected] + cached
     }
 
-    private func persistModelCache(_ models: [String], for provider: AIProvider) {
-        guard let data = try? JSONEncoder().encode(models),
-              let encoded = String(data: data, encoding: .utf8) else { return }
-        switch provider {
-        case .gemini:
-            geminiModelsCache = encoded
-        case .chatGPT:
-            openAIModelsCache = encoded
-        case .anthropic:
-            anthropicModelsCache = encoded
-        case .grok:
-            grokModelsCache = encoded
-        }
-    }
-
-    private func decodeModelCache(_ value: String) -> [String] {
-        guard !value.isEmpty,
-              let data = value.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String].self, from: data) else {
-            return []
-        }
-        return decoded
-    }
+    // MARK: - Private: conversation helpers
 
     private func singleChatMessages(for provider: AIProvider) -> [ChatMessage] {
-        let orderedRuns = runs.sorted { $0.createdAt < $1.createdAt }
         var messages: [ChatMessage] = []
-
-        for run in orderedRuns {
-            guard let result = run.results[provider], result.state != .skipped else {
-                continue
-            }
-
-            messages.append(
-                ChatMessage(
-                    role: .user,
-                    text: run.prompt,
-                    createdAt: run.createdAt,
-                    attachments: run.attachments
-                )
-            )
-
-            let responseText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let hasAssistantPayload = !responseText.isEmpty ||
-                !result.generatedMedia.isEmpty ||
-                result.inputTokens > 0 ||
-                result.outputTokens > 0
-            guard hasAssistantPayload else {
-                continue
-            }
-
-            messages.append(
-                ChatMessage(
-                    role: .assistant,
-                    text: responseText,
-                    createdAt: run.createdAt.addingTimeInterval(0.001),
-                    attachments: [],
-                    generatedMedia: result.generatedMedia,
-                    inputTokens: result.inputTokens,
-                    outputTokens: result.outputTokens,
-                    modelID: result.modelID.isEmpty ? nil : result.modelID
-                )
-            )
+        for run in runs.sorted(by: { $0.createdAt < $1.createdAt }) {
+            guard let result = run.results[provider], result.state != .skipped else { continue }
+            messages.append(ChatMessage(role: .user, text: run.prompt,
+                                        createdAt: run.createdAt, attachments: run.attachments))
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasPayload = !text.isEmpty || !result.generatedMedia.isEmpty
+                || result.inputTokens > 0 || result.outputTokens > 0
+            guard hasPayload else { continue }
+            messages.append(ChatMessage(
+                role: .assistant, text: text,
+                createdAt: run.createdAt.addingTimeInterval(0.001),
+                attachments: [], generatedMedia: result.generatedMedia,
+                inputTokens: result.inputTokens, outputTokens: result.outputTokens,
+                modelID: result.modelID.isEmpty ? nil : result.modelID
+            ))
         }
-
         return messages
     }
 
     private func upsertCurrentConversation() {
         guard !runs.isEmpty else { return }
-
         let title = makeTitle(from: runs.first?.prompt ?? "Compare")
-        let now = Date()
-
+        let now   = Date()
         if let id = selectedConversationID,
            let index = savedConversations.firstIndex(where: { $0.id == id }) {
-            savedConversations[index].runs = runs
-            savedConversations[index].title = title
+            savedConversations[index].runs      = runs
+            savedConversations[index].title     = title
             savedConversations[index].updatedAt = now
         } else {
             let id = UUID()
-            let conversation = CompareConversation(
-                id: id,
-                title: title,
-                updatedAt: now,
-                runs: runs
+            savedConversations.insert(
+                CompareConversation(id: id, title: title, updatedAt: now, runs: runs), at: 0
             )
-            savedConversations.insert(conversation, at: 0)
             selectedConversationID = id
         }
-
         savedConversations.sort { $0.updatedAt > $1.updatedAt }
         persistSavedConversations()
     }

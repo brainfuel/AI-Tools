@@ -23,13 +23,20 @@ struct PendingAttachment: Identifiable {
             }
         }
 
+        // Check file size before loading to avoid exhausting memory on huge files.
+        // Falls back to the post-load check for URLs that don't expose a file size (e.g. network volumes).
+        if let fileSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           fileSize > 18_000_000 {
+            throw AppError.api("File '\(url.lastPathComponent)' is too large (limit 18MB).")
+        }
+
         let data = try Data(contentsOf: url)
         if data.count > 18_000_000 {
-            throw GeminiError.api("File '\(url.lastPathComponent)' is too large (limit 18MB).")
+            throw AppError.api("File '\(url.lastPathComponent)' is too large (limit 18MB).")
         }
 
         let originalMimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        let processed = try preprocessIfImage(data: data, mimeType: originalMimeType)
+        let processed = preprocessIfImage(data: data, mimeType: originalMimeType)
 
         return PendingAttachment(
             name: processed.fileNameOverride ?? url.lastPathComponent,
@@ -39,7 +46,7 @@ struct PendingAttachment: Identifiable {
         )
     }
 
-    private static func preprocessIfImage(data: Data, mimeType: String) throws -> (data: Data, mimeType: String, fileNameOverride: String?) {
+    private static func preprocessIfImage(data: Data, mimeType: String) -> (data: Data, mimeType: String, fileNameOverride: String?) {
         guard mimeType.hasPrefix("image/") else {
             return (data, mimeType, nil)
         }

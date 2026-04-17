@@ -134,7 +134,7 @@ struct GeneratedMedia: Identifiable, Codable {
     }
 }
 
-struct ChatMessage: Identifiable {
+struct ChatMessage: Identifiable, Codable {
     let id: UUID
     let role: MessageRole
     let text: String
@@ -165,46 +165,6 @@ struct ChatMessage: Identifiable {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.modelID = modelID
-    }
-}
-
-extension ChatMessage: Codable {
-    enum CodingKeys: String, CodingKey {
-        case id
-        case role
-        case text
-        case createdAt
-        case attachments
-        case generatedMedia
-        case inputTokens
-        case outputTokens
-        case modelID
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        role = try container.decode(MessageRole.self, forKey: .role)
-        text = try container.decode(String.self, forKey: .text)
-        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
-        attachments = try container.decode([AttachmentSummary].self, forKey: .attachments)
-        generatedMedia = try container.decodeIfPresent([GeneratedMedia].self, forKey: .generatedMedia) ?? []
-        inputTokens = try container.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
-        outputTokens = try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
-        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(role, forKey: .role)
-        try container.encode(text, forKey: .text)
-        try container.encodeIfPresent(createdAt, forKey: .createdAt)
-        try container.encode(attachments, forKey: .attachments)
-        try container.encode(generatedMedia, forKey: .generatedMedia)
-        try container.encode(inputTokens, forKey: .inputTokens)
-        try container.encode(outputTokens, forKey: .outputTokens)
-        try container.encodeIfPresent(modelID, forKey: .modelID)
     }
 }
 

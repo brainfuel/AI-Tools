@@ -21,49 +21,57 @@ struct GeminiClient: GeminiServicing {
     ]
 
     func listGenerateContentModels() async throws -> [String] {
-        var collected: [String] = []
-        var pageToken: String?
+        do {
+            var collected: [String] = []
+            var pageToken: String?
 
-        repeat {
-            var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models")
-            components?.queryItems = [
-                URLQueryItem(name: "pageSize", value: "50")
-            ]
-            if let token = pageToken, !token.isEmpty {
-                components?.queryItems?.append(URLQueryItem(name: "pageToken", value: token))
-            }
-            guard let url = components?.url else {
-                throw GeminiError.invalidRequest
-            }
-
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 25
-            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-
-            let (data, response) = try await performWithRetry(request: request, maxAttempts: 3)
-            guard let http = response as? HTTPURLResponse else {
-                throw GeminiError.invalidResponse
-            }
-            if !(200...299).contains(http.statusCode) {
-                if let apiError = try? JSONDecoder().decode(GeminiAPIErrorEnvelope.self, from: data) {
-                    throw GeminiError.api(apiError.error.message)
+            repeat {
+                var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models")
+                components?.queryItems = [
+                    URLQueryItem(name: "pageSize", value: "50")
+                ]
+                if let token = pageToken, !token.isEmpty {
+                    components?.queryItems?.append(URLQueryItem(name: "pageToken", value: token))
                 }
-                throw GeminiError.api("Model list request failed with status \(http.statusCode).")
-            }
-
-            let decoded = try JSONDecoder().decode(GeminiListModelsResponse.self, from: data)
-            let pageModels: [String] = decoded.models.compactMap { model in
-                guard model.supportedGenerationMethods.contains("generateContent") else { return nil }
-                if model.name.hasPrefix("models/") {
-                    return String(model.name.dropFirst("models/".count))
+                guard let url = components?.url else {
+                    throw APIClientError.invalidRequest(provider: .gemini)
                 }
-                return model.name
-            }
-            collected.append(contentsOf: pageModels)
-            pageToken = decoded.nextPageToken
-        } while pageToken != nil && !(pageToken?.isEmpty ?? true)
 
-        return Array(Set(collected)).sorted()
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 25
+                request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+
+                let (data, response) = try await performWithRetry(request: request, maxAttempts: 3)
+                guard let http = response as? HTTPURLResponse else {
+                    throw APIClientError.invalidResponse(provider: .gemini)
+                }
+                if !(200...299).contains(http.statusCode) {
+                    let apiMessage = (try? JSONDecoder().decode(GeminiAPIErrorEnvelope.self, from: data))?.error.message
+                        ?? APIClientError.message(from: data)
+                    throw APIClientError.fromHTTP(
+                        provider: .gemini,
+                        statusCode: http.statusCode,
+                        message: apiMessage,
+                        fallbackPrefix: "Model list request failed with status"
+                    )
+                }
+
+                let decoded = try JSONDecoder().decode(GeminiListModelsResponse.self, from: data)
+                let pageModels: [String] = decoded.models.compactMap { model in
+                    guard model.supportedGenerationMethods.contains("generateContent") else { return nil }
+                    if model.name.hasPrefix("models/") {
+                        return String(model.name.dropFirst("models/".count))
+                    }
+                    return model.name
+                }
+                collected.append(contentsOf: pageModels)
+                pageToken = decoded.nextPageToken
+            } while pageToken != nil && !(pageToken?.isEmpty ?? true)
+
+            return Array(Set(collected)).sorted()
+        } catch {
+            throw APIClientError.normalize(error, provider: .gemini)
+        }
     }
 
     func generateReplyStream(
@@ -84,7 +92,7 @@ struct GeminiClient: GeminiServicing {
                     continuation.yield(reply)
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: APIClientError.normalize(error, provider: .gemini))
                 }
             }
         }
@@ -96,100 +104,103 @@ struct GeminiClient: GeminiServicing {
         messages: [ChatMessage],
         latestUserAttachments: [PendingAttachment]
     ) async throws -> ModelReply {
-        let escapedModel = modelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelID
-        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(escapedModel):generateContent") else {
-            throw GeminiError.invalidRequest
-        }
+        do {
+            let escapedModel = modelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelID
+            guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(escapedModel):generateContent") else {
+                throw APIClientError.invalidRequest(provider: .gemini)
+            }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-        request.timeoutInterval = 120
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            request.timeoutInterval = 120
 
-        let lastUserIndex = messages.lastIndex { $0.role == .user }
-        let payload = GeminiGenerateRequest(
-            contents: messages.enumerated().map { index, message in
-                var parts = [GeminiPart(text: message.text)]
-                if let lastUserIndex, index == lastUserIndex, !latestUserAttachments.isEmpty {
-                    parts.append(contentsOf: latestUserAttachments.map { attachment in
-                        GeminiPart(
-                            text: nil,
-                            inlineData: GeminiInlineData(
-                                mimeType: attachment.mimeType,
-                                data: attachment.base64Data
+            let lastUserIndex = messages.lastIndex { $0.role == .user }
+            let payload = GeminiGenerateRequest(
+                contents: messages.enumerated().map { index, message in
+                    var parts = [GeminiPart(text: message.text)]
+                    if let lastUserIndex, index == lastUserIndex, !latestUserAttachments.isEmpty {
+                        parts.append(contentsOf: latestUserAttachments.map { attachment in
+                            GeminiPart(
+                                text: nil,
+                                inlineData: GeminiInlineData(
+                                    mimeType: attachment.mimeType,
+                                    data: attachment.base64Data
+                                )
                             )
-                        )
-                    })
-                }
-                return GeminiContent(
-                    role: message.role == .user ? "user" : "model",
-                    parts: parts
+                        })
+                    }
+                    return GeminiContent(
+                        role: message.role == .user ? "user" : "model",
+                        parts: parts
+                    )
+                },
+                systemInstruction: systemInstruction.isEmpty ? nil : GeminiContent(
+                    role: "user",
+                    parts: [GeminiPart(text: systemInstruction)]
+                ),
+                generationConfig: GeminiGenerationConfig(
+                    responseModalities: preferredResponseModalities(for: modelID)
                 )
-            },
-            systemInstruction: systemInstruction.isEmpty ? nil : GeminiContent(
-                role: "user",
-                parts: [GeminiPart(text: systemInstruction)]
-            ),
-            generationConfig: GeminiGenerationConfig(
-                responseModalities: preferredResponseModalities(for: modelID)
             )
-        )
-        request.httpBody = try JSONEncoder().encode(payload)
+            request.httpBody = try JSONEncoder().encode(payload)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-
-        if !(200...299).contains(http.statusCode) {
-            if let apiError = try? JSONDecoder().decode(GeminiAPIErrorEnvelope.self, from: data) {
-                throw GeminiError.api(apiError.error.message)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .gemini)
             }
-            if let raw = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-               !raw.isEmpty {
-                throw GeminiError.api(raw)
-            }
-            throw GeminiError.api("Request failed with status \(http.statusCode).")
-        }
 
-        let decoded = try JSONDecoder().decode(GeminiGenerateResponse.self, from: data)
-        guard let parts = decoded.candidates.first?.content.parts else {
-            throw GeminiError.emptyReply
-        }
-
-        let text = parts.compactMap(\.text).joined()
-        let media = parts.compactMap { part -> GeneratedMedia? in
-            if let inline = part.inlineData, !inline.data.isEmpty {
-                return GeneratedMedia(
-                    kind: mediaKind(for: inline.mimeType),
-                    mimeType: inline.mimeType,
-                    base64Data: inline.data
+            if !(200...299).contains(http.statusCode) {
+                let apiMessage = (try? JSONDecoder().decode(GeminiAPIErrorEnvelope.self, from: data))?.error.message
+                    ?? APIClientError.message(from: data)
+                throw APIClientError.fromHTTP(
+                    provider: .gemini,
+                    statusCode: http.statusCode,
+                    message: apiMessage,
+                    fallbackPrefix: "Request failed with status"
                 )
             }
-            if let file = part.fileData,
-               !file.fileURI.isEmpty,
-               let url = URL(string: file.fileURI) {
-                return GeneratedMedia(
-                    kind: mediaKind(for: file.mimeType),
-                    mimeType: file.mimeType,
-                    remoteURL: url
-                )
+
+            let decoded = try JSONDecoder().decode(GeminiGenerateResponse.self, from: data)
+            guard let parts = decoded.candidates.first?.content.parts else {
+                throw APIClientError.emptyReply(provider: .gemini)
             }
-            return nil
-        }
 
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && media.isEmpty {
-            throw GeminiError.emptyReply
-        }
+            let text = parts.compactMap(\.text).joined()
+            let media = parts.compactMap { part -> GeneratedMedia? in
+                if let inline = part.inlineData, !inline.data.isEmpty {
+                    return GeneratedMedia(
+                        kind: mediaKind(for: inline.mimeType),
+                        mimeType: inline.mimeType,
+                        base64Data: inline.data
+                    )
+                }
+                if let file = part.fileData,
+                   !file.fileURI.isEmpty,
+                   let url = URL(string: file.fileURI) {
+                    return GeneratedMedia(
+                        kind: mediaKind(for: file.mimeType),
+                        mimeType: file.mimeType,
+                        remoteURL: url
+                    )
+                }
+                return nil
+            }
 
-        return ModelReply(
-            text: text,
-            generatedMedia: media,
-            inputTokens: decoded.usageMetadata?.promptTokenCount ?? 0,
-            outputTokens: decoded.usageMetadata?.candidatesTokenCount ?? 0
-        )
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && media.isEmpty {
+                throw APIClientError.emptyReply(provider: .gemini)
+            }
+
+            return ModelReply(
+                text: text,
+                generatedMedia: media,
+                inputTokens: decoded.usageMetadata?.promptTokenCount ?? 0,
+                outputTokens: decoded.usageMetadata?.candidatesTokenCount ?? 0
+            )
+        } catch {
+            throw APIClientError.normalize(error, provider: .gemini)
+        }
     }
 
     private func performWithRetry(request: URLRequest, maxAttempts: Int) async throws -> (Data, URLResponse) {
@@ -201,7 +212,7 @@ struct GeminiClient: GeminiServicing {
             } catch {
                 lastError = error
                 guard shouldRetry(error: error), attempt < maxAttempts else {
-                    throw error
+                    throw APIClientError.normalize(error, provider: .gemini)
                 }
 
                 let delayNanos = UInt64(attempt) * 700_000_000
@@ -209,7 +220,10 @@ struct GeminiClient: GeminiServicing {
             }
         }
 
-        throw lastError ?? GeminiError.invalidResponse
+        if let lastError {
+            throw APIClientError.normalize(lastError, provider: .gemini)
+        }
+        throw APIClientError.invalidResponse(provider: .gemini)
     }
 
     private func shouldRetry(error: Error) -> Bool {
@@ -238,22 +252,6 @@ struct GeminiClient: GeminiServicing {
         if mimeType == "text/csv" { return .csv }
         if mimeType.hasPrefix("text/") { return .text }
         return .file
-    }
-}
-
-enum GeminiError: LocalizedError {
-    case invalidRequest
-    case invalidResponse
-    case emptyReply
-    case api(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidRequest: return "Invalid request configuration."
-        case .invalidResponse: return "Invalid server response."
-        case .emptyReply: return "No text returned by the model."
-        case .api(let message): return message
-        }
     }
 }
 

@@ -20,31 +20,39 @@ struct OpenAIClient: GeminiServicing {
     ]
 
     func listGenerateContentModels() async throws -> [String] {
-        guard let url = URL(string: "https://api.openai.com/v1/models") else {
-            throw GeminiError.invalidRequest
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 25
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-        if !(200...299).contains(http.statusCode) {
-            if let apiError = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data) {
-                throw GeminiError.api(apiError.error.message)
+        do {
+            guard let url = URL(string: "https://api.openai.com/v1/models") else {
+                throw APIClientError.invalidRequest(provider: .chatGPT)
             }
-            throw GeminiError.api("Model list request failed with status \(http.statusCode).")
-        }
 
-        let decoded = try JSONDecoder().decode(OpenAIModelsResponse.self, from: data)
-        let supported = decoded.data
-            .map(\.id)
-            .filter { modelKind(for: $0) != .unsupported }
-        return Array(Set(supported)).sorted()
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 25
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .chatGPT)
+            }
+            if !(200...299).contains(http.statusCode) {
+                let apiMessage = (try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data))?.error.message
+                    ?? APIClientError.message(from: data)
+                throw APIClientError.fromHTTP(
+                    provider: .chatGPT,
+                    statusCode: http.statusCode,
+                    message: apiMessage,
+                    fallbackPrefix: "Model list request failed with status"
+                )
+            }
+
+            let decoded = try JSONDecoder().decode(OpenAIModelsResponse.self, from: data)
+            let supported = decoded.data
+                .map(\.id)
+                .filter { modelKind(for: $0) != .unsupported }
+            return Array(Set(supported)).sorted()
+        } catch {
+            throw APIClientError.normalize(error, provider: .chatGPT)
+        }
     }
 
     func generateReplyStream(
@@ -70,10 +78,14 @@ struct OpenAIClient: GeminiServicing {
                             continuation: continuation
                         )
                     case .unsupported:
-                        throw GeminiError.api("Model '\(modelID)' is not supported by this app yet.")
+                        throw APIClientError.api(
+                            provider: .chatGPT,
+                            statusCode: nil,
+                            message: "Model '\(modelID)' is not supported by this app yet."
+                        )
                     }
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: APIClientError.normalize(error, provider: .chatGPT))
                 }
             }
         }
@@ -86,67 +98,75 @@ struct OpenAIClient: GeminiServicing {
         latestUserAttachments: [PendingAttachment],
         continuation: AsyncThrowingStream<ModelReply, Error>.Continuation
     ) async throws {
-        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
-            throw GeminiError.invalidRequest
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
-
-        request.httpBody = try makeChatRequestBody(
-            modelID: modelID,
-            systemInstruction: systemInstruction,
-            messages: messages,
-            latestUserAttachments: latestUserAttachments
-        )
-
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-
-        if !(200...299).contains(http.statusCode) {
-            var errorData = Data()
-            for try await byte in bytes {
-                errorData.append(byte)
-                if errorData.count > 4096 { break }
+        do {
+            guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
+                throw APIClientError.invalidRequest(provider: .chatGPT)
             }
-            if let apiError = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: errorData) {
-                throw GeminiError.api(apiError.error.message)
-            }
-            throw GeminiError.api("Request failed with status \(http.statusCode).")
-        }
 
-        var yieldedAnything = false
-        for try await line in bytes.lines {
-            guard line.hasPrefix("data: ") else { continue }
-            let jsonString = String(line.dropFirst(6))
-            guard jsonString != "[DONE]" else { break }
-            guard let data = jsonString.data(using: .utf8),
-                  let chunk = try? JSONDecoder().decode(OpenAIStreamChunk.self, from: data) else {
-                continue
-            }
-            let content = chunk.choices.first?.delta.content ?? ""
-            let inputTokens = chunk.usage?.promptTokens ?? 0
-            let outputTokens = chunk.usage?.completionTokens ?? 0
-            if !content.isEmpty || inputTokens > 0 || outputTokens > 0 {
-                continuation.yield(ModelReply(
-                    text: content,
-                    generatedMedia: [],
-                    inputTokens: inputTokens,
-                    outputTokens: outputTokens
-                ))
-                if !content.isEmpty { yieldedAnything = true }
-            }
-        }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 120
 
-        if !yieldedAnything {
-            throw GeminiError.emptyReply
+            request.httpBody = try makeChatRequestBody(
+                modelID: modelID,
+                systemInstruction: systemInstruction,
+                messages: messages,
+                latestUserAttachments: latestUserAttachments
+            )
+
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .chatGPT)
+            }
+
+            if !(200...299).contains(http.statusCode) {
+                var errorData = Data()
+                for try await byte in bytes {
+                    errorData.append(byte)
+                    if errorData.count > 4096 { break }
+                }
+                let apiMessage = (try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: errorData))?.error.message
+                    ?? APIClientError.message(from: errorData)
+                throw APIClientError.fromHTTP(
+                    provider: .chatGPT,
+                    statusCode: http.statusCode,
+                    message: apiMessage,
+                    fallbackPrefix: "Request failed with status"
+                )
+            }
+
+            var yieldedAnything = false
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data: ") else { continue }
+                let jsonString = String(line.dropFirst(6))
+                guard jsonString != "[DONE]" else { break }
+                guard let data = jsonString.data(using: .utf8),
+                      let chunk = try? JSONDecoder().decode(OpenAIStreamChunk.self, from: data) else {
+                    continue
+                }
+                let content = chunk.choices.first?.delta.content ?? ""
+                let inputTokens = chunk.usage?.promptTokens ?? 0
+                let outputTokens = chunk.usage?.completionTokens ?? 0
+                if !content.isEmpty || inputTokens > 0 || outputTokens > 0 {
+                    continuation.yield(ModelReply(
+                        text: content,
+                        generatedMedia: [],
+                        inputTokens: inputTokens,
+                        outputTokens: outputTokens
+                    ))
+                    if !content.isEmpty { yieldedAnything = true }
+                }
+            }
+
+            if !yieldedAnything {
+                throw APIClientError.emptyReply(provider: .chatGPT)
+            }
+            continuation.finish()
+        } catch {
+            throw APIClientError.normalize(error, provider: .chatGPT)
         }
-        continuation.finish()
     }
 
     func makeChatRequestBody(
@@ -234,51 +254,63 @@ struct OpenAIClient: GeminiServicing {
     }
 
     private func generateImageReply(modelID: String, messages: [ChatMessage]) async throws -> ModelReply {
-        guard let prompt = messages.last(where: { $0.role == .user })?.text.trimmingCharacters(in: .whitespacesAndNewlines),
-              !prompt.isEmpty else {
-            throw GeminiError.api("Image generation requires a user prompt.")
-        }
-
-        guard let url = URL(string: "https://api.openai.com/v1/images/generations") else {
-            throw GeminiError.invalidRequest
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
-
-        let payload = OpenAIImageRequest(model: modelID, prompt: prompt)
-        request.httpBody = try JSONEncoder().encode(payload)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-        if !(200...299).contains(http.statusCode) {
-            if let apiError = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data) {
-                throw GeminiError.api(apiError.error.message)
+        do {
+            guard let prompt = messages.last(where: { $0.role == .user })?.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !prompt.isEmpty else {
+                throw APIClientError.api(
+                    provider: .chatGPT,
+                    statusCode: nil,
+                    message: "Image generation requires a user prompt."
+                )
             }
-            throw GeminiError.api("Image request failed with status \(http.statusCode).")
-        }
 
-        let decoded = try JSONDecoder().decode(OpenAIImageResponse.self, from: data)
-        let media = decoded.data.compactMap { item -> GeneratedMedia? in
-            if let b64 = item.base64JSON, !b64.isEmpty {
-                return GeneratedMedia(kind: .image, mimeType: "image/png", base64Data: b64)
+            guard let url = URL(string: "https://api.openai.com/v1/images/generations") else {
+                throw APIClientError.invalidRequest(provider: .chatGPT)
             }
-            if let urlString = item.url, let remoteURL = URL(string: urlString) {
-                return GeneratedMedia(kind: .image, mimeType: "image/png", remoteURL: remoteURL)
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 120
+
+            let payload = OpenAIImageRequest(model: modelID, prompt: prompt)
+            request.httpBody = try JSONEncoder().encode(payload)
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .chatGPT)
             }
-            return nil
-        }
+            if !(200...299).contains(http.statusCode) {
+                let apiMessage = (try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data))?.error.message
+                    ?? APIClientError.message(from: data)
+                throw APIClientError.fromHTTP(
+                    provider: .chatGPT,
+                    statusCode: http.statusCode,
+                    message: apiMessage,
+                    fallbackPrefix: "Image request failed with status"
+                )
+            }
 
-        if media.isEmpty {
-            throw GeminiError.emptyReply
-        }
+            let decoded = try JSONDecoder().decode(OpenAIImageResponse.self, from: data)
+            let media = decoded.data.compactMap { item -> GeneratedMedia? in
+                if let b64 = item.base64JSON, !b64.isEmpty {
+                    return GeneratedMedia(kind: .image, mimeType: "image/png", base64Data: b64)
+                }
+                if let urlString = item.url, let remoteURL = URL(string: urlString) {
+                    return GeneratedMedia(kind: .image, mimeType: "image/png", remoteURL: remoteURL)
+                }
+                return nil
+            }
 
-        return ModelReply(text: "", generatedMedia: media)
+            if media.isEmpty {
+                throw APIClientError.emptyReply(provider: .chatGPT)
+            }
+
+            return ModelReply(text: "", generatedMedia: media)
+        } catch {
+            throw APIClientError.normalize(error, provider: .chatGPT)
+        }
     }
 
     private func modelKind(for modelID: String) -> OpenAIModelKind {

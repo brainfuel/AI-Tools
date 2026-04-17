@@ -341,10 +341,10 @@ final class PlaygroundViewModelTests: XCTestCase {
     ) -> PlaygroundViewModel {
         let keychainService = "com.moosia.AI-ToolsTests.\(UUID().uuidString)"
         return PlaygroundViewModel(
+            apiKeyManager: APIKeyManager(keychainStore: KeychainStore(service: keychainService)),
             serviceFactory: { provider, _ in
                 MockService(provider: provider, modelMap: modelMap, recorder: recorder)
             },
-            keychainStore: KeychainStore(service: keychainService),
             conversationStoreFactory: { nil },
             nowProvider: nowProvider
         )

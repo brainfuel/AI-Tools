@@ -142,11 +142,11 @@ private struct AssistantMediaSaveButton: View {
             return data
         }
         guard let remoteURL = media.remoteURL else {
-            throw GeminiError.api("No media data available to save.")
+            throw AppError.api("No media data available to save.")
         }
         let (data, response) = try await URLSession.shared.data(from: remoteURL)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw GeminiError.api("Failed to download media (\(http.statusCode)).")
+            throw AppError.api("Failed to download media (\(http.statusCode)).")
         }
         return data
     }

@@ -4,29 +4,37 @@ struct GrokClient: GeminiServicing {
     let apiKey: String
 
     func listGenerateContentModels() async throws -> [String] {
-        guard let url = URL(string: "https://api.x.ai/v1/models") else {
-            throw GeminiError.invalidRequest
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 25
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-        if !(200...299).contains(http.statusCode) {
-            if let apiError = try? JSONDecoder().decode(GrokErrorEnvelope.self, from: data) {
-                throw GeminiError.api(apiError.error.message)
+        do {
+            guard let url = URL(string: "https://api.x.ai/v1/models") else {
+                throw APIClientError.invalidRequest(provider: .grok)
             }
-            throw GeminiError.api("Model list request failed with status \(http.statusCode).")
-        }
 
-        let decoded = try JSONDecoder().decode(GrokModelsResponse.self, from: data)
-        let uniqueSorted = Array(Set(decoded.data.map(\.id))).sorted()
-        return uniqueSorted
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 25
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .grok)
+            }
+            if !(200...299).contains(http.statusCode) {
+                let apiMessage = (try? JSONDecoder().decode(GrokErrorEnvelope.self, from: data))?.error.message
+                    ?? APIClientError.message(from: data)
+                throw APIClientError.fromHTTP(
+                    provider: .grok,
+                    statusCode: http.statusCode,
+                    message: apiMessage,
+                    fallbackPrefix: "Model list request failed with status"
+                )
+            }
+
+            let decoded = try JSONDecoder().decode(GrokModelsResponse.self, from: data)
+            let uniqueSorted = Array(Set(decoded.data.map(\.id))).sorted()
+            return uniqueSorted
+        } catch {
+            throw APIClientError.normalize(error, provider: .grok)
+        }
     }
 
     func generateReplyStream(
@@ -46,7 +54,7 @@ struct GrokClient: GeminiServicing {
                         continuation: continuation
                     )
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: APIClientError.normalize(error, provider: .grok))
                 }
             }
         }
@@ -59,83 +67,87 @@ struct GrokClient: GeminiServicing {
         latestUserAttachments: [PendingAttachment],
         continuation: AsyncThrowingStream<ModelReply, Error>.Continuation
     ) async throws {
-        guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
-            throw GeminiError.invalidRequest
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
-        request.httpBody = try makeChatRequestBody(
-            modelID: modelID,
-            systemInstruction: systemInstruction,
-            messages: messages,
-            latestUserAttachments: latestUserAttachments
-        )
-
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-
-        if !(200...299).contains(http.statusCode) {
-            var errorData = Data()
-            for try await byte in bytes {
-                errorData.append(byte)
-                if errorData.count > 4096 { break }
+        do {
+            guard let url = URL(string: "https://api.x.ai/v1/chat/completions") else {
+                throw APIClientError.invalidRequest(provider: .grok)
             }
 
-            let hasImageAttachments = latestUserAttachments.contains(where: isSupportedImageAttachment)
-            if http.statusCode == 400, hasImageAttachments {
-                do {
-                    let fallbackReply = try await fetchResponsesFallbackReply(
-                        modelID: modelID,
-                        systemInstruction: systemInstruction,
-                        messages: messages,
-                        latestUserAttachments: latestUserAttachments
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 120
+            request.httpBody = try makeChatRequestBody(
+                modelID: modelID,
+                systemInstruction: systemInstruction,
+                messages: messages,
+                latestUserAttachments: latestUserAttachments
+            )
+
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .grok)
+            }
+
+            if !(200...299).contains(http.statusCode) {
+                var errorData = Data()
+                for try await byte in bytes {
+                    errorData.append(byte)
+                    if errorData.count > 4096 { break }
+                }
+
+                let hasImageAttachments = latestUserAttachments.contains(where: isSupportedImageAttachment)
+                if http.statusCode == 400, hasImageAttachments {
+                    do {
+                        let fallbackReply = try await fetchResponsesFallbackReply(
+                            modelID: modelID,
+                            systemInstruction: systemInstruction,
+                            messages: messages,
+                            latestUserAttachments: latestUserAttachments
+                        )
+                        continuation.yield(fallbackReply)
+                        continuation.finish()
+                        return
+                    } catch {
+                        // Keep original chat-completions failure as the surfaced error below.
+                    }
+                }
+                throw makeAPIError(statusCode: http.statusCode, data: errorData, prefix: "Request failed with status")
+            }
+
+            var yieldedAnything = false
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data: ") else { continue }
+                let jsonString = String(line.dropFirst(6))
+                guard jsonString != "[DONE]" else { break }
+                guard let data = jsonString.data(using: .utf8),
+                      let chunk = try? JSONDecoder().decode(GrokStreamChunk.self, from: data) else {
+                    continue
+                }
+
+                let content = chunk.choices.first?.delta.content ?? ""
+                let inputTokens = chunk.usage?.promptTokens ?? 0
+                let outputTokens = chunk.usage?.completionTokens ?? 0
+                if !content.isEmpty || inputTokens > 0 || outputTokens > 0 {
+                    continuation.yield(
+                        ModelReply(
+                            text: content,
+                            generatedMedia: [],
+                            inputTokens: inputTokens,
+                            outputTokens: outputTokens
+                        )
                     )
-                    continuation.yield(fallbackReply)
-                    continuation.finish()
-                    return
-                } catch {
-                    // Keep original chat-completions failure as the surfaced error below.
+                    if !content.isEmpty { yieldedAnything = true }
                 }
             }
-            throw makeAPIError(statusCode: http.statusCode, data: errorData, prefix: "Request failed with status")
-        }
 
-        var yieldedAnything = false
-        for try await line in bytes.lines {
-            guard line.hasPrefix("data: ") else { continue }
-            let jsonString = String(line.dropFirst(6))
-            guard jsonString != "[DONE]" else { break }
-            guard let data = jsonString.data(using: .utf8),
-                  let chunk = try? JSONDecoder().decode(GrokStreamChunk.self, from: data) else {
-                continue
+            if !yieldedAnything {
+                throw APIClientError.emptyReply(provider: .grok)
             }
-
-            let content = chunk.choices.first?.delta.content ?? ""
-            let inputTokens = chunk.usage?.promptTokens ?? 0
-            let outputTokens = chunk.usage?.completionTokens ?? 0
-            if !content.isEmpty || inputTokens > 0 || outputTokens > 0 {
-                continuation.yield(
-                    ModelReply(
-                        text: content,
-                        generatedMedia: [],
-                        inputTokens: inputTokens,
-                        outputTokens: outputTokens
-                    )
-                )
-                if !content.isEmpty { yieldedAnything = true }
-            }
+            continuation.finish()
+        } catch {
+            throw APIClientError.normalize(error, provider: .grok)
         }
-
-        if !yieldedAnything {
-            throw GeminiError.emptyReply
-        }
-        continuation.finish()
     }
 
     func makeChatRequestBody(
@@ -232,42 +244,46 @@ struct GrokClient: GeminiServicing {
         messages: [ChatMessage],
         latestUserAttachments: [PendingAttachment]
     ) async throws -> ModelReply {
-        guard let url = URL(string: "https://api.x.ai/v1/responses") else {
-            throw GeminiError.invalidRequest
-        }
+        do {
+            guard let url = URL(string: "https://api.x.ai/v1/responses") else {
+                throw APIClientError.invalidRequest(provider: .grok)
+            }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
-        request.httpBody = try makeResponsesRequestBody(
-            modelID: modelID,
-            systemInstruction: systemInstruction,
-            messages: messages,
-            latestUserAttachments: latestUserAttachments
-        )
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 120
+            request.httpBody = try makeResponsesRequestBody(
+                modelID: modelID,
+                systemInstruction: systemInstruction,
+                messages: messages,
+                latestUserAttachments: latestUserAttachments
+            )
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiError.invalidResponse
-        }
-        guard (200...299).contains(http.statusCode) else {
-            throw makeAPIError(statusCode: http.statusCode, data: data, prefix: "Responses fallback failed with status")
-        }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIClientError.invalidResponse(provider: .grok)
+            }
+            guard (200...299).contains(http.statusCode) else {
+                throw makeAPIError(statusCode: http.statusCode, data: data, prefix: "Responses fallback failed with status")
+            }
 
-        let decoded = try JSONDecoder().decode(GrokResponsesCreateResponse.self, from: data)
-        let outputText = extractResponsesOutputText(from: decoded)
-        guard !outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw GeminiError.emptyReply
-        }
+            let decoded = try JSONDecoder().decode(GrokResponsesCreateResponse.self, from: data)
+            let outputText = extractResponsesOutputText(from: decoded)
+            guard !outputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw APIClientError.emptyReply(provider: .grok)
+            }
 
-        return ModelReply(
-            text: outputText,
-            generatedMedia: [],
-            inputTokens: decoded.usage?.inputTokens ?? 0,
-            outputTokens: decoded.usage?.outputTokens ?? 0
-        )
+            return ModelReply(
+                text: outputText,
+                generatedMedia: [],
+                inputTokens: decoded.usage?.inputTokens ?? 0,
+                outputTokens: decoded.usage?.outputTokens ?? 0
+            )
+        } catch {
+            throw APIClientError.normalize(error, provider: .grok)
+        }
     }
 
     private func makeResponsesRequestBody(
@@ -379,20 +395,16 @@ struct GrokClient: GeminiServicing {
         return isSupportedMimeType && !attachment.base64Data.isEmpty
     }
 
-    private func makeAPIError(statusCode: Int, data: Data, prefix: String) -> GeminiError {
-        if let apiError = try? JSONDecoder().decode(GrokErrorEnvelope.self, from: data) {
-            return .api(apiError.error.message)
-        }
-        if let raw = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !raw.isEmpty {
-            return .api(raw)
-        }
+    private func makeAPIError(statusCode: Int, data: Data, prefix: String) -> APIClientError {
+        let apiMessage = (try? JSONDecoder().decode(GrokErrorEnvelope.self, from: data))?.error.message
+            ?? APIClientError.message(from: data)
 
-        if statusCode == 429 {
-            return .api("Request failed with status 429 (rate limit or quota exceeded).")
-        }
-        return .api("\(prefix) \(statusCode).")
+        return APIClientError.fromHTTP(
+            provider: .grok,
+            statusCode: statusCode,
+            message: apiMessage,
+            fallbackPrefix: prefix
+        )
     }
 }
 
