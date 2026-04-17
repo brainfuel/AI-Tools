@@ -21,6 +21,23 @@ private enum WorkspaceMode: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ThemeGroupBoxStyle: GroupBoxStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            configuration.label
+                .font(.headline)
+            configuration.content
+        }
+        .padding(10)
+        .background(AppTheme.surfaceSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
+        )
+    }
+}
+
 struct ContentView: View {
     @StateObject private var viewModel = PlaygroundViewModel()
     @StateObject private var compareViewModel = CompareViewModel()
@@ -32,6 +49,8 @@ struct ContentView: View {
     @State private var showingUsageStats = false
     @State private var showingFileImporter = false
     @State private var showingCompareFileImporter = false
+    @State private var isSingleDropTarget = false
+    @State private var isCompareDropTarget = false
     @FocusState private var inputFocused: Bool
     @FocusState private var compareInputFocused: Bool
 
@@ -40,7 +59,7 @@ struct ContentView: View {
             sidebar
         } detail: {
             detailContent
-            .navigationTitle("AI Tools")
+            .navigationTitle("AI Compare")
             .toolbar {
                 if workspaceMode == .single {
                     ToolbarItem(placement: .primaryAction) {
@@ -62,8 +81,10 @@ struct ContentView: View {
                 )
             }
         }
+        .background(AppTheme.canvasBackground)
 #if os(macOS)
-        .navigationSplitViewColumnWidth(min: 220, ideal: 280)
+        .frame(minWidth: 1180, minHeight: 760)
+        .navigationSplitViewColumnWidth(min: 280, ideal: 320)
 #endif
         .task {
             await viewModel.loadOnLaunchIfNeeded()
@@ -94,6 +115,10 @@ struct ContentView: View {
             }
         }
         .padding()
+        .background(AppTheme.canvasBackground)
+#if os(macOS)
+        .frame(minWidth: 760)
+#endif
     }
 
     private var sidebar: some View {
@@ -154,7 +179,7 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 4)
-                    .listRowBackground(viewModel.selectedConversationID == nil ? Color.accentColor.opacity(0.14) : Color.clear)
+                    .listRowBackground(viewModel.selectedConversationID == nil ? AppTheme.brandTint.opacity(0.14) : Color.clear)
 
                     ForEach(viewModel.filteredConversations(query: historySearch)) { conversation in
                         Button {
@@ -173,7 +198,7 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
-                        .listRowBackground(viewModel.selectedConversationID == conversation.id ? Color.accentColor.opacity(0.14) : Color.clear)
+                        .listRowBackground(viewModel.selectedConversationID == conversation.id ? AppTheme.brandTint.opacity(0.14) : Color.clear)
                     }
                 } else {
                     Button {
@@ -191,7 +216,7 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 4)
-                    .listRowBackground(compareViewModel.selectedConversationID == nil ? Color.accentColor.opacity(0.14) : Color.clear)
+                    .listRowBackground(compareViewModel.selectedConversationID == nil ? AppTheme.brandTint.opacity(0.14) : Color.clear)
 
                     ForEach(compareViewModel.filteredConversations(query: historySearch)) { conversation in
                         Button {
@@ -210,11 +235,14 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
-                        .listRowBackground(compareViewModel.selectedConversationID == conversation.id ? Color.accentColor.opacity(0.14) : Color.clear)
+                        .listRowBackground(compareViewModel.selectedConversationID == conversation.id ? AppTheme.brandTint.opacity(0.14) : Color.clear)
                     }
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(AppTheme.surfaceSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
             .animation(
                 .easeInOut(duration: 0.2),
                 value: workspaceMode == .single
@@ -222,6 +250,9 @@ struct ContentView: View {
                     : compareViewModel.savedConversations.map(\.id)
             )
         }
+        .padding(8)
+        .background(AppTheme.surfaceGrouped)
+        .frame(minWidth: 280)
     }
 
     private var configurationSection: some View {
@@ -279,6 +310,7 @@ struct ContentView: View {
                     .lineLimit(2...5)
             }
         }
+        .groupBoxStyle(ThemeGroupBoxStyle())
     }
 
     private var messagesSection: some View {
@@ -308,7 +340,7 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: viewModel.messages.count) { _, _ in
+            .onChange(of: viewModel.messages.count) {
                 if let last = viewModel.messages.last?.id {
                     withAnimation {
                         proxy.scrollTo(last, anchor: .bottom)
@@ -320,7 +352,7 @@ struct ContentView: View {
                     proxy.scrollTo("loading-indicator", anchor: .bottom)
                 }
             }
-            .onChange(of: viewModel.streamingText) { _, _ in
+            .onChange(of: viewModel.streamingText) {
                 proxy.scrollTo("streaming-bubble", anchor: .bottom)
             }
             .textSelection(.enabled)
@@ -334,7 +366,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
             MarkdownText(viewModel.streamingText)
                 .padding(10)
-                .background(Color.secondary.opacity(0.15))
+                .background(AppTheme.surfaceSecondary)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
@@ -433,14 +465,14 @@ private extension ContentView {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .textSelection(.enabled)
-                .onChange(of: compareViewModel.runs.count) { _ in
+                .onChange(of: compareViewModel.runs.count) {
                     if let lastID = compareViewModel.runsChronological.last?.id {
                         withAnimation {
                             proxy.scrollTo(lastID, anchor: .bottom)
                         }
                     }
                 }
-                .onChange(of: compareViewModel.selectedConversationID) { _ in
+                .onChange(of: compareViewModel.selectedConversationID) {
                     if let lastID = compareViewModel.runsChronological.last?.id {
                         withAnimation {
                             proxy.scrollTo(lastID, anchor: .bottom)
@@ -457,7 +489,11 @@ private extension ContentView {
             }
         }
         .padding(10)
-        .background(Color.secondary.opacity(0.08))
+        .background(AppTheme.surfaceSecondary)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -473,7 +509,7 @@ private extension ContentView {
                 .font(.subheadline)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.accentColor.opacity(0.15))
+                .background(AppTheme.nodeInput.opacity(0.2))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if !run.attachments.isEmpty {
@@ -495,14 +531,14 @@ private extension ContentView {
                     if !result.text.isEmpty {
                         MarkdownText(result.text)
                             .padding(8)
-                            .background(Color.secondary.opacity(0.12))
+                            .background(AppTheme.surfacePrimary)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 case .success:
                     if !result.text.isEmpty {
                         MarkdownText(result.text)
                             .padding(8)
-                            .background(Color.secondary.opacity(0.12))
+                            .background(AppTheme.surfacePrimary)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     if !result.generatedMedia.isEmpty {
@@ -541,7 +577,11 @@ private extension ContentView {
             }
         }
         .padding(8)
-        .background(Color.secondary.opacity(0.08))
+        .background(AppTheme.surfaceGrouped)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -573,20 +613,34 @@ private extension ContentView {
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 6)
-                            .background(Color.secondary.opacity(0.15))
+                            .background(AppTheme.surfaceSecondary)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     }
                 }
             }
 
-            TextEditor(text: $comparePrompt)
-                .focused($compareInputFocused)
-                .padding(8)
+            Group {
+#if os(macOS)
+                AttachmentDropTextEditor(
+                    text: $comparePrompt,
+                    isDropTargeted: $isCompareDropTarget
+                ) { urls in
+                    compareViewModel.addAttachments(fromResult: .success(urls))
+                }
+#else
+                TextEditor(text: $comparePrompt)
+                    .focused($compareInputFocused)
+                    .padding(8)
+#endif
+            }
                 .frame(minHeight: 90, maxHeight: 150)
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.secondary.opacity(0.3))
+                        .stroke(
+                            isCompareDropTarget ? AppTheme.brandTint : AppTheme.cardBorder,
+                            lineWidth: isCompareDropTarget ? 2 : 1
+                        )
                 }
 
             HStack {
@@ -624,6 +678,13 @@ private extension ContentView {
                 )
             }
         }
+        .padding(8)
+        .background(AppTheme.surfaceSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
+        )
         .fileImporter(
             isPresented: $showingCompareFileImporter,
             allowedContentTypes: [.item],
@@ -830,20 +891,34 @@ private extension ContentView {
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 6)
-                            .background(Color.secondary.opacity(0.15))
+                            .background(AppTheme.surfaceSecondary)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     }
                 }
             }
 
-            TextEditor(text: $prompt)
-                .focused($inputFocused)
-                .padding(8)
+            Group {
+#if os(macOS)
+                AttachmentDropTextEditor(
+                    text: $prompt,
+                    isDropTargeted: $isSingleDropTarget
+                ) { urls in
+                    viewModel.addAttachments(fromResult: .success(urls))
+                }
+#else
+                TextEditor(text: $prompt)
+                    .focused($inputFocused)
+                    .padding(8)
+#endif
+            }
                 .frame(minHeight: 90, maxHeight: 150)
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.secondary.opacity(0.3))
+                        .stroke(
+                            isSingleDropTarget ? AppTheme.brandTint : AppTheme.cardBorder,
+                            lineWidth: isSingleDropTarget ? 2 : 1
+                        )
                 }
 
             HStack {
@@ -882,6 +957,13 @@ private extension ContentView {
                 )
             }
         }
+        .padding(8)
+        .background(AppTheme.surfaceSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
+        )
         .fileImporter(
             isPresented: $showingFileImporter,
             allowedContentTypes: [.item],
@@ -908,7 +990,7 @@ private extension ContentView {
                     }
                 }
                 .padding(10)
-                .background(message.role == .user ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.15))
+                .background(message.role == .user ? AppTheme.nodeHuman.opacity(0.2) : AppTheme.surfaceSecondary)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
 
