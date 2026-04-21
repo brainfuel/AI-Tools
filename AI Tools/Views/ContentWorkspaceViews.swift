@@ -477,6 +477,22 @@ private struct ColumnHeaderIconButtonStyle: ButtonStyle {
     }
 }
 
+private struct ColumnCheckboxToggleStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
+                .imageScale(.medium)
+                .foregroundStyle(configuration.isOn ? AppTheme.brandTint : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1.0 : 0.4)
+    }
+}
+
 // MARK: - Compare workspace
 
 struct CompareWorkspaceView: View {
@@ -587,7 +603,7 @@ struct CompareProviderColumnView: View {
                         get: { state.isEnabled },
                         set: { onToggleProviderEnabled($0) }
                     )) { EmptyView() }
-                    .toggleStyle(.checkbox)
+                    .toggleStyle(ColumnCheckboxToggleStyle())
                     .help(state.isEnabled ? "Included in Send All" : "Excluded from Send All")
                     .disabled(state.isSending)
 
