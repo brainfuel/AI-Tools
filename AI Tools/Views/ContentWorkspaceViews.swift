@@ -625,16 +625,32 @@ struct CompareProviderColumnView: View {
                 if state.availableModels.isEmpty {
                     Text("No models cached").font(.caption).foregroundStyle(.secondary)
                 } else {
+#if os(iOS)
+                    // Menu gives us full label control so the selected model
+                    // stays on one line and truncates cleanly.
+                    Menu {
+                        ForEach(state.availableModels, id: \.self) { model in
+                            Button(model) { onSelectModel(model) }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(state.selectedModel)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(AppTheme.brandTint)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+#else
                     Picker("Model", selection: compareModelBinding) {
                         ForEach(state.availableModels, id: \.self) { model in
                             Text(model).tag(model)
                         }
                     }
                     .pickerStyle(.menu)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-#if os(iOS)
-                    .font(.caption)
 #endif
                 }
 #if os(iOS)
