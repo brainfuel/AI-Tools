@@ -52,6 +52,7 @@ iOSInjectionProject/
 *.certSigningRequest
 AuthKey_*.p8
 ExportOptions.plist
+!scripts/ExportOptions.plist
 
 # macOS
 .DS_Store
