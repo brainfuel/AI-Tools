@@ -678,6 +678,7 @@ struct PDFExportButton: View {
     var body: some View {
         Button { presentShareSheet() } label: {
             Image(systemName: "square.and.arrow.up")
+                .offset(y: -2)
         }
         .help("Share / Export PDF")
     }
