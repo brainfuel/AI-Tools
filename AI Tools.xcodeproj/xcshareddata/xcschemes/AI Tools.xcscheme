@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "659B77B02F5100600095EB2B"
-               BuildableName = "AI Tools.app"
+               BuildableName = "AI Compare.app"
                BlueprintName = "AI Tools"
                ReferencedContainer = "container:AI Tools.xcodeproj">
             </BuildableReference>
@@ -72,7 +72,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "659B77B02F5100600095EB2B"
-            BuildableName = "AI Tools.app"
+            BuildableName = "AI Compare.app"
             BlueprintName = "AI Tools"
             ReferencedContainer = "container:AI Tools.xcodeproj">
          </BuildableReference>
@@ -89,7 +89,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "659B77B02F5100600095EB2B"
-            BuildableName = "AI Tools.app"
+            BuildableName = "AI Compare.app"
             BlueprintName = "AI Tools"
             ReferencedContainer = "container:AI Tools.xcodeproj">
          </BuildableReference>
