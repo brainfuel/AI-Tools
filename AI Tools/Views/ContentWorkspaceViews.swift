@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import AppKit
 #elseif canImport(UIKit)
 import UIKit
+import PhotosUI
 #endif
 
 protocol SidebarConversationSummarizing: Identifiable where ID == UUID {
@@ -380,6 +381,9 @@ struct SingleComposerSection: View {
     @State private var isDropTargeted = false
     @State private var showingFileImporter = false
     @FocusState private var inputFocused: Bool
+#if os(iOS)
+    @State private var photoItem: PhotosPickerItem?
+#endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -398,6 +402,16 @@ struct SingleComposerSection: View {
                 Button("Attach") { showingFileImporter = true }
                     .buttonStyle(.bordered)
                     .disabled(viewModel.isLoading)
+#if os(iOS)
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Image(systemName: "camera")
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isLoading)
+                .onChange(of: photoItem) { _, item in
+                    Task { await loadPhoto(item, add: { viewModel.addAttachments(fromResult: $0) }) }
+                }
+#endif
                 Button("Send") { send() }
                     .buttonStyle(.borderedProminent)
                     .disabled(
@@ -828,6 +842,9 @@ struct CompareComposerSection: View {
     @State private var isDropTargeted = false
     @State private var showingFileImporter = false
     @FocusState private var inputFocused: Bool
+#if os(iOS)
+    @State private var photoItem: PhotosPickerItem?
+#endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -876,6 +893,16 @@ struct CompareComposerSection: View {
                 Button("Attach") { showingFileImporter = true }
                     .buttonStyle(.bordered)
                     .disabled(compareViewModel.isSending)
+#if os(iOS)
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Image(systemName: "camera")
+                }
+                .buttonStyle(.bordered)
+                .disabled(compareViewModel.isSending)
+                .onChange(of: photoItem) { _, item in
+                    Task { await loadPhoto(item, add: { compareViewModel.addAttachments(fromResult: $0) }) }
+                }
+#endif
                 Button("Send All") { send() }
                     .buttonStyle(.borderedProminent)
                     .disabled(
@@ -901,6 +928,24 @@ struct CompareComposerSection: View {
         Task { await compareViewModel.sendCompare(text: text) }
     }
 }
+
+// MARK: - Photo picker helper (iOS)
+
+#if os(iOS)
+@MainActor
+private func loadPhoto(
+    _ item: PhotosPickerItem?,
+    add: @escaping (Result<[URL], Error>) -> Void
+) async {
+    guard let item else { return }
+    guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathExtension("jpg")
+    guard (try? data.write(to: url)) != nil else { return }
+    add(.success([url]))
+}
+#endif
 
 // MARK: - Shared subviews
 
