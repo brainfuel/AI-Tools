@@ -124,11 +124,13 @@ struct ConversationSidebarView: View {
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 4)
+            .listRowInsets(EdgeInsets())
             .listRowBackground(AppTheme.brandTint.opacity(0.14))
             .transition(.opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98, anchor: .top)))
         }
