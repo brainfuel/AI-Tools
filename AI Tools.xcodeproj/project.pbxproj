@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		65441A882F96AD9D0058C459 /* Textual in Frameworks */ = {isa = PBXBuildFile; productRef = 65441A872F96AD9D0058C459 /* Textual */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A10000062F6000010095EB2B /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				65441A882F96AD9D0058C459 /* Textual in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -103,6 +108,7 @@
 			);
 			name = "AI Tools";
 			packageProductDependencies = (
+				65441A872F96AD9D0058C459 /* Textual */,
 			);
 			productName = "AI Tools";
 			productReference = 659B77B12F5100600095EB2B /* AI Tools.app */;
@@ -159,6 +165,9 @@
 			);
 			mainGroup = 659B77A82F5100600095EB2B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				65441A862F96AD9D0058C459 /* XCRemoteSwiftPackageReference "textual" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 659B77B22F5100600095EB2B /* Products */;
 			projectDirPath = "";
@@ -508,6 +517,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		65441A862F96AD9D0058C459 /* XCRemoteSwiftPackageReference "textual" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/textual";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.3.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		65441A872F96AD9D0058C459 /* Textual */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 65441A862F96AD9D0058C459 /* XCRemoteSwiftPackageReference "textual" */;
+			productName = Textual;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 659B77A92F5100600095EB2B /* Project object */;
 }
