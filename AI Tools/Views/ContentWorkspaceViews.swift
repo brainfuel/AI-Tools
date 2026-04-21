@@ -621,7 +621,7 @@ struct CompareProviderColumnView: View {
                 }
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 if state.availableModels.isEmpty {
                     Text("No models cached").font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -631,12 +631,20 @@ struct CompareProviderColumnView: View {
                         }
                     }
                     .pickerStyle(.menu)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+#if os(iOS)
+                    .font(.caption)
+#endif
                 }
 #if os(iOS)
                 Button(action: onRefreshModels) {
                     Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                        .imageScale(.small)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
                 .disabled(state.isSending || !state.hasAPIKey)
 #else
                 Button("Load", action: onRefreshModels)
